@@ -322,17 +322,17 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
                                   ),
                                 ],
                                 getHeight(16),
-                                CustomFormField(
-                                  label: 'Issue Title',
-                                  hintText: 'Issue Title',
-                                  isRequired: false,
-                                  controller: _issueTitleController,
-                                  inputType: InputType.multiline,
-                                  minLines: 2,
-                                  inputBorderRadius: 8,
-                                  validator: (_) => null,
-                                ),
-                                getHeight(16),
+                                // CustomFormField(
+                                //   label: 'Issue Title',
+                                //   hintText: 'Issue Title',
+                                //   isRequired: false,
+                                //   controller: _issueTitleController,
+                                //   inputType: InputType.multiline,
+                                //   minLines: 2,
+                                //   inputBorderRadius: 8,
+                                //   validator: (_) => null,
+                                // ),
+                                // getHeight(16),
                                 CustomFormField(
                                   label: 'Issue Description',
                                   hintText: 'Description',
@@ -344,26 +344,26 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
                                   maxLength: 500,
                                 ),
                                 getHeight(16),
-                                CustomRadioButton(
-                                  label: 'Priority',
-                                  isRequired: false,
-                                  horizontalSpacing: 8,
-                                  iconTextSpacing: 4,
-                                  iconSize: 20,
-                                  fontSize: 13,
-                                  initialValue: _selectedPriority,
-                                  options: _priorities
-                                      .map(
-                                        (p) => OptionItem(
-                                          value: p,
-                                          label: p,
-                                        ),
-                                      )
-                                      .toList(),
-                                  onChanged: (value) {
-                                    setState(() => _selectedPriority = value);
-                                  },
-                                ),
+                                // CustomRadioButton(
+                                //   label: 'Priority',
+                                //   isRequired: false,
+                                //   horizontalSpacing: 8,
+                                //   iconTextSpacing: 4,
+                                //   iconSize: 20,
+                                //   fontSize: 13,
+                                //   initialValue: _selectedPriority,
+                                //   options: _priorities
+                                //       .map(
+                                //         (p) => OptionItem(
+                                //           value: p,
+                                //           label: p,
+                                //         ),
+                                //       )
+                                //       .toList(),
+                                //   onChanged: (value) {
+                                //     setState(() => _selectedPriority = value);
+                                //   },
+                                // ),
                               ],
                             ),
                           ),

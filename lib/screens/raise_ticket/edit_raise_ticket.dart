@@ -492,12 +492,12 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
     if (_selectedAssetCode == null) {
       errors.add('Please select asset code');
     }
-    if (_issueTitleController.text.trim().isEmpty) {
-      errors.add('Issue Title is required');
-    }
-    if (_selectedPriority == null || _selectedPriority!.trim().isEmpty) {
-      errors.add('Priority is required');
-    }
+    // if (_issueTitleController.text.trim().isEmpty) {
+    //   errors.add('Issue Title is required');
+    // }
+    // if (_selectedPriority == null || _selectedPriority!.trim().isEmpty) {
+    //   errors.add('Priority is required');
+    // }
     if (_selectedStatus == null) {
       errors.add('Status is required');
     }
@@ -716,7 +716,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                 CustomFormField(
                   label: 'Issue Title',
                   hintText: 'Issue Title',
-                  isRequired: true,
+                  isRequired: false,
                   controller: _issueTitleController,
                   isEditable: !_isViewMode,
                   inputBorderRadius: 8,
@@ -735,7 +735,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                   absorbing: _isViewMode,
                   child: CustomRadioButton(
                     label: 'Priority',
-                    isRequired: true,
+                    isRequired: false,
                     horizontalSpacing: 8,
                     iconTextSpacing: 4,
                     iconSize: 20,
@@ -831,7 +831,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: CustomSubmitButtonV2(
-              text: 'Update',
+              text: 'Submit',
               isLoading: _isSubmitting,
               onPressed: _onSubmit,
             ),

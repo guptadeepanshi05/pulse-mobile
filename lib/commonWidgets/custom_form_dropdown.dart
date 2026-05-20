@@ -153,11 +153,13 @@ class _CustomDropdownState extends State<CustomDropdown> {
             buttonStyleData: ButtonStyleData(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               decoration: BoxDecoration(
-                border: Border.all(
-                  color: widget.isDisabled ? Colors.grey.shade300 : Colors.grey,
-                ),
+                border: widget.isDisabled
+                    ? null
+                    : Border.all(color: Colors.grey),
                 borderRadius: BorderRadius.circular(5),
-                color: widget.isDisabled ? Colors.grey.shade100 : Colors.white,
+                color: widget.isDisabled
+                    ? AppColors.borderColorE0E0E0
+                    : Colors.white,
               ),
             ),
             iconStyleData: IconStyleData(
