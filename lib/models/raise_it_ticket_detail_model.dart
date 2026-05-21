@@ -19,6 +19,8 @@ class RaiseItTicketDetail {
   final String assignedToName;
   final String? closedByName;
   final String? ticketStatus;
+  final int? itAssetIssueAttachmentId;
+  final String? itAssetIssueAttachmentName;
 
   const RaiseItTicketDetail({
     required this.iaitId,
@@ -39,6 +41,8 @@ class RaiseItTicketDetail {
     this.assignedToName = '',
     this.closedByName,
     this.ticketStatus,
+    this.itAssetIssueAttachmentId,
+    this.itAssetIssueAttachmentName,
   });
 
   factory RaiseItTicketDetail.fromJson(Map<String, dynamic> json) {
@@ -61,6 +65,9 @@ class RaiseItTicketDetail {
       assignedToName: _str(json['assignedToName']),
       closedByName: _strOrNull(json['closedByName']),
       ticketStatus: _strOrNull(json['ticketStatus']),
+      itAssetIssueAttachmentId: _intOrNull(json['itAssetIssueAttachmentId']),
+      itAssetIssueAttachmentName:
+          _strOrNull(json['itAssetIssueAttachmentName']),
     );
   }
 

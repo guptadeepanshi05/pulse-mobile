@@ -36,8 +36,25 @@ class ItAssetCodeDropdown {
 
   const ItAssetCodeDropdown({required this.assetsByType});
 
-  List<ItAssetCode> get allAssets =>
-      assetsByType.values.expand((list) => list).toList();
+  /// Flattened list across all groups, de-duplicated by [ItAssetCode.asset].
+  ///
+  /// The backend occasionally returns the same asset twice (same `iam_id` and
+  /// label). The dropdown widget requires unique values, so we keep the first
+  /// occurrence and drop subsequent ones.
+  List<ItAssetCode> get allAssets {
+    final seen = <String>{};
+    final result = <ItAssetCode>[];
+    for (final list in assetsByType.values) {
+      for (final item in list) {
+        final key = item.asset.trim();
+        if (key.isEmpty) continue;
+        if (seen.add(key)) {
+          result.add(item);
+        }
+      }
+    }
+    return result;
+  }
 
   factory ItAssetCodeDropdown.fromResponse(dynamic data) {
     final map = <String, List<ItAssetCode>>{};

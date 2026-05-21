@@ -25,7 +25,9 @@ import 'package:app/services/upload_dcouments.dart';
 import 'package:app/utils/connectivity_helper.dart';
 import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
+import 'package:dotted_line/dotted_line.dart';
 import 'package:flutter/material.dart';
+import 'package:open_file/open_file.dart';
 
 class EditRaiseItTicketScreen extends StatefulWidget {
   final int iaitId;
@@ -466,6 +468,201 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
     }
   }
 
+  bool get _hasTicketAttachment {
+    final id = _detail?.itAssetIssueAttachmentId;
+    return id != null && id > 0;
+  }
+
+  String get _ticketAttachmentDisplayName {
+    final name = _detail?.itAssetIssueAttachmentName?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    final id = _detail?.itAssetIssueAttachmentId;
+    return id != null ? 'attachment_$id' : 'attachment';
+  }
+
+  IconData _attachmentIcon(String path) {
+    final extension = path.split('.').last.toLowerCase();
+    switch (extension) {
+      case 'pdf':
+        return Icons.picture_as_pdf;
+      case 'doc':
+      case 'docx':
+        return Icons.description;
+      case 'xls':
+      case 'xlsx':
+        return Icons.table_chart;
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'gif':
+        return Icons.image;
+      case 'txt':
+        return Icons.text_snippet;
+      default:
+        return Icons.insert_drive_file;
+    }
+  }
+
+  Widget _buildTicketAttachmentSection() {
+    final displayName = _ticketAttachmentDisplayName;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Add Attachment',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+            color: AppColors.whiteColor,
+            fontFamily: fontFamilyMontserrat,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300, width: 1),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                _attachmentIcon(displayName),
+                size: 20,
+                color: AppColors.color555555,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: GestureDetector(
+                  onTap: _openTicketAttachment,
+                  child: Text(
+                    displayName,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.textBlueAccent,
+                      fontFamily: fontFamilyMontserrat,
+                      decoration: TextDecoration.underline,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAddCommentSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const DottedLine(
+          dashLength: 4,
+          dashGapLength: 3,
+          lineThickness: 2,
+          dashColor: AppColors.whiteColor,
+        ),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFE6F5EF).withOpacity(0.3),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              CustomRemarksField(
+                label: 'Add Comments',
+                hintText: 'Enter comments',
+                controller: _commentsController,
+                isDisabled: false,
+                maxLines: 4,
+              ),
+              getHeight(16),
+              CustomFileUploadNew(
+                label: 'Add Attachment',
+                placeholder: 'Upload File',
+                isRequired: false,
+                uploadedFiles: _attachments,
+                onFileSelected: (File? file) async {
+                  if (file != null) {
+                    await _uploadAttachmentImmediately(file);
+                  }
+                },
+                onFileDeleted: (File file) {
+                  setState(() {
+                    _attachments.remove(file);
+                    _attachmentId = null;
+                    _attachmentName = null;
+                  });
+                },
+                isDisabled: _isUploadingAttachment,
+              ),
+              if (_isUploadingAttachment) ...[
+                getHeight(8),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primaryGreen,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openTicketAttachment() async {
+    final detail = _detail;
+    if (detail == null) return;
+    final attachmentId = detail.itAssetIssueAttachmentId;
+    if (attachmentId == null || attachmentId <= 0) return;
+
+    final fileName = detail.itAssetIssueAttachmentName?.trim().isNotEmpty == true
+        ? detail.itAssetIssueAttachmentName!.trim()
+        : 'attachment_$attachmentId';
+
+    try {
+      LoaderWidget.showLoader(context);
+      final filePath = await ServiceLocator().cmRepository.downloadDocument(
+            attachmentId,
+            fileName,
+          );
+      final openResult = await OpenFile.open(filePath);
+      if (openResult.type != ResultType.done && mounted) {
+        Toastbar.showErrorToastbar(
+          openResult.message.isNotEmpty
+              ? openResult.message
+              : 'Unable to open attachment',
+          context,
+        );
+      }
+    } catch (e) {
+      Logger.errorLog('[EditRaiseItTicket] Open attachment failed: $e');
+      if (mounted) {
+        Toastbar.showErrorToastbar('Unable to open attachment: $e', context);
+      }
+    } finally {
+      if (LoaderWidget.isShowing) {
+        LoaderWidget.hideLoader();
+      }
+    }
+  }
+
   Future<void> _ensureAttachmentUploadedBeforeSubmit() async {
     if (_attachments.isEmpty) return;
     if (!_needsAttachmentUpload(_attachmentId)) return;
@@ -594,6 +791,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
         remarks: _detail!.remarks,
         ticketComments: _buildCommentsForSubmit(),
         ticketNumber: _detail!.ticketNumber,
+        itAssetIssueAttachmentId: _detail!.itAssetIssueAttachmentId,
       );
 
       await ServiceLocator().raiseItTicketRepository.postRaiseITTicket(request);
@@ -781,49 +979,13 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                   isDisabled: _isViewMode,
                   onChanged: _onAssigneeChanged,
                 ),
+                if (_hasTicketAttachment) ...[
+                  getHeight(16),
+                  _buildTicketAttachmentSection(),
+                ],
                 getHeight(16),
                 if (!_isViewMode) ...[
-                  CustomRemarksField(
-                    label: 'Add Comments',
-                    hintText: 'Enter comments',
-                    controller: _commentsController,
-                    isDisabled: false,
-                    maxLines: 4,
-                  ),
-                  getHeight(16),
-                  CustomFileUploadNew(
-                    label: 'Add Attachment',
-                    placeholder: 'Upload File',
-                    isRequired: false,
-                    uploadedFiles: _attachments,
-                    onFileSelected: (File? file) async {
-                      if (file != null) {
-                        await _uploadAttachmentImmediately(file);
-                      }
-                    },
-                    onFileDeleted: (File file) {
-                      setState(() {
-                        _attachments.remove(file);
-                        _attachmentId = null;
-                        _attachmentName = null;
-                      });
-                    },
-                    isDisabled: _isUploadingAttachment,
-                  ),
-                  if (_isUploadingAttachment) ...[
-                    getHeight(8),
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primaryGreen,
-                        ),
-                      ),
-                    ),
-                  ],
+                  _buildAddCommentSection(),
                   getHeight(16),
                 ],
                 if (_visibleExistingComments.isNotEmpty) ...[

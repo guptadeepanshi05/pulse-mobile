@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:app/commonWidgets/custom_file_upload_new.dart';
 import 'package:app/commonWidgets/custom_form_dropdown.dart';
 import 'package:app/commonWidgets/custom_form_field.dart';
 import 'package:app/commonWidgets/custom_radio_options.dart';
@@ -7,12 +10,15 @@ import 'package:app/constants/app_colors.dart';
 import 'package:app/constants/app_images.dart';
 import 'package:app/constants/constants_methods.dart';
 import 'package:app/constants/constants_strings.dart';
+import 'package:app/enum/activity_type_enum.dart';
 import 'package:app/models/it_asset_code_model.dart';
 import 'package:app/models/it_asset_type_model.dart';
 import 'package:app/models/raise_it_ticket_request_model.dart';
 import 'package:app/models/raise_it_ticket_status_model.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
 import 'package:app/services/service_locator.dart';
+import 'package:app/services/upload_dcouments.dart';
+import 'package:app/utils/connectivity_helper.dart';
 import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:flutter/material.dart';
@@ -28,6 +34,9 @@ class CreateRaiseItTicketScreen extends StatefulWidget {
 class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
   final _issueTitleController = TextEditingController();
   final _issueDescriptionController = TextEditingController();
+  final _uploadDocumentsService = UploadDcoumentsService(
+    apiService: ServiceLocator().apiService,
+  );
 
   List<ItAssetType> _assetTypes = [];
   List<ItAssetCode> _assetCodes = [];
@@ -36,9 +45,13 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
   ItAssetCode? _selectedAssetCode;
   String? _selectedPriority;
 
+  final List<File> _attachments = [];
+  dynamic _attachmentId;
+
   bool _isLoadingDropdowns = true;
   bool _isLoadingAssetCodes = false;
   bool _isSubmitting = false;
+  bool _isUploadingAttachment = false;
 
   static const _priorities = ['Low', 'Medium', 'High', 'Critical'];
 
@@ -149,6 +162,85 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
 
   String _assetTypeLabel(ItAssetType type) => type.assetType;
 
+  int? get _attachmentIdAsInt {
+    if (_attachmentId == null) return null;
+    return int.tryParse(_attachmentId.toString().trim());
+  }
+
+  bool _needsAttachmentUpload(dynamic id) {
+    if (_attachments.isEmpty) return false;
+    if (id == null) return true;
+    final s = id.toString().trim();
+    if (s.isEmpty || s == '0') return true;
+    if (s.startsWith('LOCAL_IMAGE_ID')) return true;
+    return false;
+  }
+
+  Future<String?> _uploadDocumentWithFallback(File file) async {
+    final isOnline = await ConnectivityHelper.isConnected();
+    if (!isOnline) {
+      return await ServiceLocator().imageUploadService
+          .persistCmDocumentLocalWithoutMobileUploads(file.path);
+    }
+
+    final result = await _uploadDocumentsService.uploadFile(
+      file: file,
+      id: '0',
+      activityType: ActivityTypeEnum.itAssetIssueTicket.value,
+    );
+
+    if (result.isSuccess && (result.data ?? '').trim().isNotEmpty) {
+      return result.data!.trim();
+    }
+
+    return await ServiceLocator().imageUploadService
+        .persistCmDocumentLocalWithoutMobileUploads(file.path);
+  }
+
+  Future<void> _uploadAttachmentImmediately(File file) async {
+    setState(() {
+      _isUploadingAttachment = true;
+      _attachmentId = null;
+      _attachments
+        ..clear()
+        ..add(file);
+    });
+
+    try {
+      final docId = await _uploadDocumentWithFallback(file);
+      if (!mounted) return;
+
+      if (docId != null && docId.trim().isNotEmpty) {
+        setState(() {
+          _attachmentId = docId;
+        });
+      } else {
+        Toastbar.showErrorToastbar('Failed to upload attachment', context);
+      }
+    } catch (e) {
+      Logger.errorLog('[CreateRaiseItTicket] Attachment upload failed: $e');
+      if (mounted) {
+        Toastbar.showErrorToastbar('Failed to upload attachment: $e', context);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingAttachment = false);
+      }
+    }
+  }
+
+  Future<void> _ensureAttachmentUploadedBeforeSubmit() async {
+    if (_attachments.isEmpty) return;
+    if (!_needsAttachmentUpload(_attachmentId)) return;
+
+    final docId = await _uploadDocumentWithFallback(_attachments.first);
+    if (docId == null || docId.trim().isEmpty) {
+      throw Exception('Failed to upload attachment');
+    }
+
+    _attachmentId = docId;
+  }
+
   List<String> _collectRequiredFieldErrors() {
     final errors = <String>[];
     if (_selectedAssetType == null) {
@@ -218,7 +310,10 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
     LoaderWidget.showLoader(context);
 
     try {
+      await _ensureAttachmentUploadedBeforeSubmit();
+
       final openStatus = _openStatus!;
+      final attachmentId = _attachmentIdAsInt;
       final request = RaiseItTicketRequest(
         iatmId: _selectedAssetType!.iatmId,
         iamId: _selectedAssetCode!.iamId,
@@ -230,6 +325,8 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
         assignedToName: '',
         ticketStatus: openStatus.statusCode,
         isActive: true,
+        itAssetIssueAttachmentId:
+            (attachmentId != null && attachmentId > 0) ? attachmentId : null,
       );
 
       Logger.debugLog(
@@ -343,6 +440,39 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
                                   inputBorderRadius: 8,
                                   maxLength: 500,
                                 ),
+                                getHeight(16),
+                                CustomFileUploadNew(
+                                  label: 'Add Attachment',
+                                  placeholder: 'Upload File',
+                                  isRequired: false,
+                                  uploadedFiles: _attachments,
+                                  onFileSelected: (File? file) async {
+                                    if (file != null) {
+                                      await _uploadAttachmentImmediately(file);
+                                    }
+                                  },
+                                  onFileDeleted: (File file) {
+                                    setState(() {
+                                      _attachments.remove(file);
+                                      _attachmentId = null;
+                                    });
+                                  },
+                                  isDisabled: _isUploadingAttachment,
+                                ),
+                                if (_isUploadingAttachment) ...[
+                                  getHeight(8),
+                                  const Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.primaryGreen,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                                 getHeight(16),
                                 // CustomRadioButton(
                                 //   label: 'Priority',

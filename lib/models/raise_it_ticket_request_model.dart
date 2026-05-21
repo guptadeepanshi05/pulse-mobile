@@ -83,6 +83,7 @@ class RaiseItTicketRequest {
   final String assignedToName;
   final String? closedByName;
   final String? ticketStatus;
+  final int? itAssetIssueAttachmentId;
 
   const RaiseItTicketRequest({
     this.iaitId,
@@ -103,6 +104,7 @@ class RaiseItTicketRequest {
     this.assignedToName = '',
     this.closedByName,
     this.ticketStatus,
+    this.itAssetIssueAttachmentId,
   });
 
   Map<String, dynamic> toJson() {
@@ -126,6 +128,8 @@ class RaiseItTicketRequest {
       'assignedToName': assignedToName,
       if (closedByName != null) 'closedByName': closedByName,
       if (ticketStatus != null) 'ticketStatus': ticketStatus,
+      if (itAssetIssueAttachmentId != null && itAssetIssueAttachmentId! > 0)
+        'itAssetIssueAttachmentId': itAssetIssueAttachmentId,
     };
   }
 }

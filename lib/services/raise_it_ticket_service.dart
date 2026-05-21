@@ -230,6 +230,14 @@ class RaiseItTicketService {
       Logger.infoLog(
         '[RaiseItTicketService] Loaded raise IT ticket iaitId: $iaitId',
       );
+      Logger.debugLog(
+        '[RaiseItTicketService] Ticket detail JSON keys: ${map.keys.toList()}',
+      );
+      Logger.debugLog(
+        '[RaiseItTicketService] Parsed itAssetIssueAttachmentId='
+        '${detail.itAssetIssueAttachmentId}, '
+        'itAssetIssueAttachmentName=${detail.itAssetIssueAttachmentName}',
+      );
       return ResponseResult.success(detail, response.statusCode);
     } catch (e) {
       Logger.errorLog(
