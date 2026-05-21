@@ -230,17 +230,33 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
     _selectedPriority =
         _priorities.contains(priorityUi) ? priorityUi : priorityUi;
 
-    if (detail.assignedToId != null) {
+    final assignedId = detail.assignedToId;
+    if (assignedId != null && assignedId > 0) {
+      RaiseTicketAssignedTo? matched;
       for (final a in assignees) {
-        if (a.userMstId == detail.assignedToId) {
-          _selectedAssignee = a;
-          _assigneeInitial = a.fullName;
+        if (a.userMstId == assignedId) {
+          matched = a;
           break;
         }
       }
-    }
-    if (_selectedAssignee == null && detail.assignedToName.isNotEmpty) {
-      _assigneeInitial = detail.assignedToName;
+
+      if (matched == null) {
+        // Assignee exists on the ticket but isn't in the fetched list
+        // (filtered/inactive). Synthesize an entry so the dropdown can
+        // display the current assignee and the user can still switch.
+        matched = RaiseTicketAssignedTo(
+          userMstId: assignedId,
+          fullName: detail.assignedToName.isNotEmpty
+              ? detail.assignedToName
+              : 'User #$assignedId',
+          entityId: 0,
+          roleName: '',
+        );
+        _assignees = [matched, ..._assignees];
+      }
+
+      _selectedAssignee = matched;
+      _assigneeInitial = matched.fullName;
     }
 
     _applyStatusSelection(detail);
@@ -501,6 +517,9 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
     if (_selectedStatus == null) {
       errors.add('Status is required');
     }
+    if (_selectedAssignee == null) {
+      errors.add('Assigned To is required');
+    }
     return errors;
   }
 
@@ -756,7 +775,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                 CustomDropdown(
                   key: ValueKey('assignee_$_assigneeInitial'),
                   label: 'Assigned To',
-                  isRequired: false,
+                  isRequired: true,
                   items: _assignees.map((a) => a.fullName).toList(),
                   initialValue: _assigneeInitial,
                   isDisabled: _isViewMode,
