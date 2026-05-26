@@ -3,6 +3,7 @@ import 'package:app/services/local_storage_db.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/auth_model.dart';
 import '../models/forgot_password_model.dart';
@@ -36,12 +37,26 @@ class AuthRepository {
       // Send empty string instead of null to avoid backend 500 when token is unavailable
       final tokenForApi = firebaseToken ?? '';
 
+      // Fetch the current app version to send as a header so the backend can
+      // identify which client version initiated the login request.
+      String appVersion = '';
+      try {
+        final packageInfo = await PackageInfo.fromPlatform();
+        appVersion = packageInfo.version;
+      } catch (_) {
+        // package_info_plus can fail on some platforms/contexts; fall back to
+        // an empty string rather than blocking login.
+      }
+
       final response = await _apiService.post<Map<String, dynamic>>(
         path: 'authenticate/login',
         data: {
           'username': username,
           'password': password,
           'firebaseAccessToken': tokenForApi,
+        },
+        headers: {
+          'App-Version': appVersion,
         },
       );
 
