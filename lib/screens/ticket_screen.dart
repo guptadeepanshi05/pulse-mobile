@@ -14,6 +14,7 @@ import 'package:app/screens/incident_ticket/incident_detail_screen.dart';
 import 'package:app/screens/site_visit/all_sites.dart';
 import 'package:app/screens/site_visit/site_visit.dart';
 import 'package:app/services/service_locator.dart';
+import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/utils/asset_audit_navigation_helper.dart';
 import 'package:app/utils/map_api_field_reader.dart';
 import 'package:app/utils/logger.dart';
@@ -1670,6 +1671,16 @@ class _TicketScreenState extends State<TicketScreen>
 
   /// Syncs offline data by checking pending requests and posting them to the server
   Future<void> _syncOfflineData() async {
+    // Refuse to start a second sweep while one is already running so the same
+    // pending_requests row isn't POSTed twice (which the server records as
+    // duplicate `pclsri_id` / `pclsrd_id` entries).
+    if (!AssetAuditPostService.beginSyncSweep()) {
+      Logger.infoLog('TicketScreen: Sync already in progress, ignoring tap');
+      if (mounted) {
+        Toastbar.showInfoToastbar('Sync already in progress', context);
+      }
+      return;
+    }
     try {
       Logger.infoLog('🔄 TicketScreen: Starting offline data sync');
 
@@ -1716,6 +1727,8 @@ class _TicketScreenState extends State<TicketScreen>
       Logger.errorLog('TicketScreen: Error during sync: $e');
       if (!mounted) return;
       Toastbar.showErrorToastbar('Sync failed: $e', context);
+    } finally {
+      AssetAuditPostService.endSyncSweep();
     }
   }
 }

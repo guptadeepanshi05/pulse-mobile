@@ -7,6 +7,7 @@ import 'package:app/models/screen_permission.dart';
 import 'package:app/screens/corrective_maintainece/cm_all_sites.dart';
 import 'package:app/screens/ticket_screen.dart';
 import 'package:app/services/service_locator.dart';
+import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:flutter/material.dart';
@@ -54,6 +55,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Syncs offline data by checking pending requests and posting them to the server
   Future<void> _syncOfflineData() async {
+    // Refuse to start a second sweep while one is already running so the same
+    // pending_requests row isn't POSTed twice (which the server records as
+    // duplicate `pclsri_id` / `pclsrd_id` entries).
+    if (!AssetAuditPostService.beginSyncSweep()) {
+      Logger.infoLog('HomeScreen: Sync already in progress, ignoring tap');
+      if (mounted) {
+        Toastbar.showInfoToastbar('Sync already in progress', context);
+      }
+      return;
+    }
     try {
       Logger.infoLog('🔄 HomeScreen: Starting offline data sync');
 
@@ -100,6 +111,8 @@ class _HomeScreenState extends State<HomeScreen> {
       Logger.errorLog('HomeScreen: Error during sync: $e');
       if (!mounted) return;
       Toastbar.showErrorToastbar('Sync failed: $e', context);
+    } finally {
+      AssetAuditPostService.endSyncSweep();
     }
   }
 

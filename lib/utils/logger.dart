@@ -29,6 +29,8 @@ class Logger {
   /// Log general information
   static void infoLog(String message) {
     developer.log(message, name: 'INFO');
+    print(message);
+
   }
 
   /// Log API calls

@@ -224,34 +224,62 @@ class _PMPageRenderState extends State<PMPageRender> {
       final siteAuditSchId = _pmData['pageHeader']?[0]?['site_audit_sch_id']
           ?.toString();
 
-      if (siteAuditSchId != null) {
+      if (siteAuditSchId == null) {
+        Logger.errorLog(
+          '❌ PM save aborted: siteAuditSchId missing in pageHeader',
+        );
+        return;
+      }
 
-        final dataToPost = _pmData['responseData'][_currentPageName];
-        // Update data in SQLite
-        final success = await ServiceLocator().centralAssetAuditService
-            .updateDataInSqlite(
-              siteAuditSchId: siteAuditSchId,
-              updatedData: _pmData,
-            );
+      // Read using the data key (e.g. enum value) so it matches how data was stored
+      // in _onPageDataChanged. For telecom this equals the display name; for solar
+      // pages like "BOS (Balnace of system)" the display name differs from the
+      // stored key ("BOS"), so using _currentPageName here would yield null.
+      final dataToPost = _pmData['responseData'][_currentDataKey];
+      if (dataToPost is! List || dataToPost.isEmpty) {
+        Logger.errorLog(
+          '❌ PM save aborted: no data to post for page "$_currentPageName" '
+          '(dataKey: $_currentDataKey). responseData keys: '
+          '${(_pmData['responseData'] as Map?)?.keys.toList()}',
+        );
+        return;
+      }
 
-        if (success) {
-          await _postPmDataToApi(dataToPost);
-          // Update status in raw_api_data so My Tickets shows correct status (COMPLETED / IN-PROGRESS)
-          final newStatus = _isLastPage ? 'COMPLETED' : 'IN-PROGRESS';
-          try {
-            await ServiceLocator().centralAssetAuditDataService.updateRawApiDataStatus(
-              siteAuditSchId: siteAuditSchId,
-              status: newStatus,
-            );
-            Logger.debugLog('✅ PM status updated to $newStatus in SQLite for My Tickets');
-          } catch (statusErr) {
-            Logger.errorLog('⚠️ Failed to update PM status in SQLite: $statusErr');
-          }
-        } else {
+      Logger.infoLog(
+        '📝 PM saving page="$_currentPageName" (dataKey=$_currentDataKey, '
+        'items=${dataToPost.length}, isLastPage=$_isLastPage)',
+      );
 
-        }
-      } else {
+      // Update data in SQLite
+      final success = await ServiceLocator().centralAssetAuditService
+          .updateDataInSqlite(
+            siteAuditSchId: siteAuditSchId,
+            updatedData: _pmData,
+          );
 
+      if (!success) {
+        Logger.errorLog(
+          '❌ PM updateDataInSqlite returned false for site $siteAuditSchId, '
+          'aborting post to avoid status drift',
+        );
+        return;
+      }
+
+      // Post (or save offline) — now properly awaited end-to-end
+      await _postPmDataToApi(dataToPost);
+
+      // Update status in raw_api_data so My Tickets shows correct status (COMPLETED / IN-PROGRESS)
+      final newStatus = _isLastPage ? 'COMPLETED' : 'IN-PROGRESS';
+      try {
+        await ServiceLocator().centralAssetAuditDataService.updateRawApiDataStatus(
+          siteAuditSchId: siteAuditSchId,
+          status: newStatus,
+        );
+        Logger.debugLog(
+          '✅ PM status updated to $newStatus in SQLite for My Tickets',
+        );
+      } catch (statusErr) {
+        Logger.errorLog('⚠️ Failed to update PM status in SQLite: $statusErr');
       }
     } catch (e) {
       Logger.errorLog('Error in _updateDataInSqliteAndCallApi: $e');
@@ -281,7 +309,11 @@ class _PMPageRenderState extends State<PMPageRender> {
           );
       Logger.infoLog('PM data posted successfully to API');
     } catch (e) {
+      // Rethrow so the caller can skip the raw_api_data status update — otherwise
+      // My Tickets would show COMPLETED/IN-PROGRESS while pending_requests is empty
+      // (this was a contributor to the "only CT data syncs" bug).
       Logger.errorLog('Error posting PM data to API: $e');
+      rethrow;
     }
   }
 

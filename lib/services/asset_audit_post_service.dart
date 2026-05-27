@@ -78,7 +78,7 @@ class AssetAuditPostService {
         copiedRequests,
         finalLocation,
       );
-      _postRequestsIfConnectedOrSaveToSqlite(
+      await _postRequestsIfConnectedOrSaveToSqlite(
         copiedRequests,
         isConnected,
         activityType,
@@ -93,7 +93,36 @@ class AssetAuditPostService {
     }
   }
 
-  void _postRequestsIfConnectedOrSaveToSqlite(
+  // Monotonically increasing suffix to guarantee unique request_id even when two
+  // offline saves land in the same millisecond (e.g. quick PM page navigation).
+  static int _offlineRequestSeq = 0;
+
+  // Track in-flight sync operations to prevent the SAME pending request from
+  // being POSTed by two concurrent sync runs. Without this guard, rapid taps on
+  // the Sync button (or auto-sync racing with manual sync) cause the server to
+  // receive the same payload N times — visible as N copies of the same record
+  // (e.g. 17× duplicated `pclsri_id` / `pclsrd_id` for the same checklist item).
+  static final Set<String> _inFlightSyncRequestIds = <String>{};
+  static bool _isSyncRunning = false;
+
+  /// Whether an offline-sync sweep is currently in progress.
+  /// Callers (sync buttons) should check this and bail out instead of starting
+  /// a parallel sweep, otherwise they'd POST the same pending rows again.
+  static bool get isSyncInProgress => _isSyncRunning;
+
+  /// Mark a sync sweep as started. Returns true if acquired, false if another
+  /// sweep is already running. Pair with [endSyncSweep] in a `finally` block.
+  static bool beginSyncSweep() {
+    if (_isSyncRunning) return false;
+    _isSyncRunning = true;
+    return true;
+  }
+
+  static void endSyncSweep() {
+    _isSyncRunning = false;
+  }
+
+  Future<void> _postRequestsIfConnectedOrSaveToSqlite(
     List<dynamic> requests,
     bool isConnected,
     ActivityTypeEnum activityType,
@@ -162,20 +191,30 @@ class AssetAuditPostService {
     Logger.infoLog(
       "User is not connected to the internet, saving data in local db",
     );
+    // Ensure uniqueness even when multiple offline saves land in the same ms
+    // (was causing PM IN-PROGRESS saves to be overwritten by the COMPLETED one).
+    final uniqueSuffix = ++_offlineRequestSeq;
+    final requestId =
+        'asset_audit_${DateTime.now().millisecondsSinceEpoch}_$uniqueSuffix';
     bool isSaved = await ServiceLocator().pendingRequestService
         .savePendingRequest(
-          requestId: 'asset_audit_${DateTime.now().millisecondsSinceEpoch}',
+          requestId: requestId,
           url: url,
           headers: {},
           jsonEncodedRequestData: jsonEncode(requests),
         );
     if (isSaved) {
-      Logger.infoLog("Data saved to DB successfully");
+      Logger.infoLog(
+        "Data saved to DB successfully (requestId: $requestId, url: $url)",
+      );
 
       Toastbar.showSuccessToastWithoutContext(
         "Data submission failed. Don’t worry—your data has been saved on this device and can be synced when you’re back online.",
       );
     } else {
+      Logger.errorLog(
+        '❌ Failed to save pending request to SQLite (requestId: $requestId, url: $url)',
+      );
       throw Exception('Failed to save data to database');
     }
   }
@@ -338,6 +377,17 @@ class AssetAuditPostService {
     List<dynamic> requests,
     String requestId,
   ) async {
+    // Guard: if this same pending request is already being processed by another
+    // sync sweep (rapid Sync taps, screen switches, auto-sync, etc.), skip it.
+    // Otherwise the server receives the same payload twice -> duplicate
+    // `pclsri_id` / `pclsrd_id` rows for one logical checklist response.
+    if (_inFlightSyncRequestIds.contains(requestId)) {
+      Logger.infoLog(
+        '⏭️ Skipping sync for $requestId — already in-flight in another sweep',
+      );
+      return;
+    }
+    _inFlightSyncRequestIds.add(requestId);
     try {
       List<dynamic> copiedRequests = jsonDecode(jsonEncode(requests));
 
@@ -369,6 +419,8 @@ class AssetAuditPostService {
     } catch (e) {
       Logger.errorLog(e.toString());
       rethrow;
+    } finally {
+      _inFlightSyncRequestIds.remove(requestId);
     }
   }
 

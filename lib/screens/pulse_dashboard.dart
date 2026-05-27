@@ -5,6 +5,7 @@ import 'package:app/screens/pmis/project_list.dart';
 import 'package:app/screens/raise_ticket/raise_tickets.dart';
 import 'package:app/screens/ticket_screen.dart';
 import 'package:app/services/service_locator.dart';
+import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/services/local_storage_db.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -729,6 +730,17 @@ class _PulseDashboardState extends State<PulseDashboard> {
 
   /// Syncs offline data by checking pending requests and posting them to the server
   Future<void> _syncOfflineData() async {
+    // Refuse to start a second sweep while one is already running.
+    // Without this, rapid taps each fetch the same `pending_requests` rows and
+    // re-POST them before `deleteRequest` runs — that's what produces the
+    // multiplied `pclsri_id` / `pclsrd_id` records seen on the server.
+    if (!AssetAuditPostService.beginSyncSweep()) {
+      Logger.infoLog('PulseDashboard: Sync already in progress, ignoring tap');
+      if (mounted) {
+        Toastbar.showInfoToastbar('Sync already in progress', context);
+      }
+      return;
+    }
     try {
       Logger.infoLog('🔄 PulseDashboard: Starting offline data sync');
 
@@ -740,6 +752,19 @@ class _PulseDashboardState extends State<PulseDashboard> {
       Logger.infoLog(
         'PulseDashboard: Found ${pendingRequests.length} pending requests',
       );
+
+      // Log each pending request so we can verify offline storage is saving
+      // every PM page (Tower/Battery/.../CT), not just the last one.
+      // NOTE: must use Logger.infoLog, not print() — bare print() is rate-limited
+      // by Flutter (debugPrintThrottled) and silently dropped under load.
+      for (int i = 0; i < pendingRequests.length; i++) {
+        final r = pendingRequests[i];
+        final dataStr = r['request_data']?.toString() ?? '';
+        Logger.infoLog(
+          '📋 Pending request in database[$i] id=${r['request_id']} url=${r['url']} '
+          'dataLen=${dataStr.length} created=${r['created_at']}',
+        );
+      }
 
       if (pendingRequests.isEmpty) {
         Logger.infoLog('PulseDashboard: No pending requests found');
@@ -760,7 +785,8 @@ class _PulseDashboardState extends State<PulseDashboard> {
           successCount++;
         } catch (e) {
           Logger.errorLog(
-            'PulseDashboard: Failed to sync request ${request['request_id']}: $e',
+            'PulseDashboard: Failed to sync request ${request['request_id']} '
+            '(url=${request['url']}): $e',
           );
         }
       }
@@ -775,6 +801,8 @@ class _PulseDashboardState extends State<PulseDashboard> {
       Logger.errorLog('PulseDashboard: Error during sync: $e');
       if (!mounted) return;
       Toastbar.showErrorToastbar('Sync failed: $e', context);
+    } finally {
+      AssetAuditPostService.endSyncSweep();
     }
   }
 
