@@ -99,11 +99,20 @@ class CustomFileUploadNew extends StatelessWidget {
   }
 
   Future<void> _validateAndSelectFile(BuildContext context, File file) async {
+    // Honor [pickAllowedExtensions] when provided so callers can opt-in to
+    // additional file types (e.g. images) without being blocked by the
+    // default PDF/DOC/DOCX allowlist.
+    final allowedExts =
+        (pickAllowedExtensions != null && pickAllowedExtensions!.isNotEmpty)
+            ? pickAllowedExtensions!.map((e) => e.toLowerCase()).toList()
+            : _defaultAllowedExtensions;
+
     final extension = file.path.split('.').last.toLowerCase();
-    if (!_defaultAllowedExtensions.contains(extension)) {
+    if (!allowedExts.contains(extension)) {
       if (!context.mounted) return;
+      final readable = allowedExts.map((e) => e.toUpperCase()).join(', ');
       Toastbar.showErrorToastbar(
-        'Only PDF, DOC and DOCX files are allowed.',
+        'Only $readable files are allowed.',
         context,
       );
       return;
@@ -278,7 +287,7 @@ class CustomFileUploadNew extends StatelessWidget {
         // Uploaded Files List
         if (uploadedFiles.isNotEmpty) ...[
           const SizedBox(height: 16),
-          ...uploadedFiles.map((file) => _buildUploadedFileItem(file)),
+          ...uploadedFiles.map((file) => _buildUploadedFileItem(context, file)),
         ],
         
       ],
@@ -349,7 +358,8 @@ class CustomFileUploadNew extends StatelessWidget {
     );
   }
 
-  Widget _buildUploadedFileItem(File file) {
+  Widget _buildUploadedFileItem(BuildContext context, File file) {
+    final isImage = _isImageFile(file.path);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -370,15 +380,22 @@ class CustomFileUploadNew extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              _getFileName(file.path),
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w400,
-                color: AppColors.color555555,
-                fontFamily: fontFamilyMontserrat,
+            child: GestureDetector(
+              onTap: isImage ? () => _showImagePreview(context, file) : null,
+              child: Text(
+                _getFileName(file.path),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                  color: isImage
+                      ? AppColors.textBlueAccent
+                      : AppColors.color555555,
+                  fontFamily: fontFamilyMontserrat,
+                  decoration:
+                      isImage ? TextDecoration.underline : TextDecoration.none,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
           const SizedBox(width: 8),
@@ -393,6 +410,70 @@ class CustomFileUploadNew extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+
+  bool _isImageFile(String path) {
+    final extension = path.split('.').last.toLowerCase();
+    return const ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
+        .contains(extension);
+  }
+
+  void _showImagePreview(BuildContext context, File file) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: EdgeInsets.zero,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: () => Navigator.of(dialogContext).pop(),
+                  child: InteractiveViewer(
+                    minScale: 1,
+                    maxScale: 4,
+                    child: Center(
+                      child: Image.file(
+                        file,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child: Text(
+                            'Unable to load image',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 32,
+                right: 16,
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => Navigator.of(dialogContext).pop(),
+                    child: const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

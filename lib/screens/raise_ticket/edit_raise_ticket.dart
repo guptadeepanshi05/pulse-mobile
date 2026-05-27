@@ -590,6 +590,16 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                 label: 'Add Attachment',
                 placeholder: 'Upload File',
                 isRequired: false,
+                acceptedFileTypes: '(PDF, DOC, DOCX, JPG, JPEG, PNG)',
+                maxSizeText: '(Max Size: 2MB)',
+                pickAllowedExtensions: const [
+                  'pdf',
+                  'doc',
+                  'docx',
+                  'jpg',
+                  'jpeg',
+                  'png',
+                ],
                 uploadedFiles: _attachments,
                 onFileSelected: (File? file) async {
                   if (file != null) {
@@ -888,7 +898,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                 CustomDropdown(
                   key: ValueKey('status_$_statusInitial'),
                   label: 'Status',
-                  isRequired: true,
+                  isRequired: !_isViewMode,
                   items: _statuses.map((s) => s.statusCode).toList(),
                   initialValue: _statusInitial,
                   isDisabled: _isViewMode,
@@ -973,7 +983,7 @@ class _EditRaiseItTicketScreenState extends State<EditRaiseItTicketScreen> {
                 CustomDropdown(
                   key: ValueKey('assignee_$_assigneeInitial'),
                   label: 'Assigned To',
-                  isRequired: true,
+                  isRequired: !_isViewMode,
                   items: _assignees.map((a) => a.fullName).toList(),
                   initialValue: _assigneeInitial,
                   isDisabled: _isViewMode,

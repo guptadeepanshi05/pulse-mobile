@@ -452,6 +452,17 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
                                   label: 'Add Attachment',
                                   placeholder: 'Upload File',
                                   isRequired: false,
+                                  acceptedFileTypes:
+                                      '(PDF, DOC, DOCX, JPG, JPEG, PNG)',
+                                  maxSizeText: '(Max Size: 2MB)',
+                                  pickAllowedExtensions: const [
+                                    'pdf',
+                                    'doc',
+                                    'docx',
+                                    'jpg',
+                                    'jpeg',
+                                    'png',
+                                  ],
                                   uploadedFiles: _attachments,
                                   onFileSelected: (File? file) async {
                                     if (file != null) {
