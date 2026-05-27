@@ -607,21 +607,17 @@ class _FireExtinguisherTelecomV2ScreenState
                   _displayFormData?['fireExtinguisherAllAssets']
                       as List<dynamic>? ??
                   [];
-              try {
-                final matchingAsset = allAssets.firstWhere(
-                  (asset) =>
-                      asset['mfg_serial_no']?.toString().toUpperCase() ==
-                          serialNumber.toUpperCase() ||
-                      asset['nexgen_serial_no']?.toString().toUpperCase() ==
-                          serialNumber.toUpperCase(),
-                );
-
-                if (matchingAsset != null &&
-                    matchingAsset['capacity'] != null) {
-                  return {'capacity': matchingAsset['capacity'].toString()};
-                }
-              } catch (e) {
-                // No matching asset found
+              final matchingAsset = allAssets
+                  .where(
+                    (asset) =>
+                        asset['mfg_serial_no']?.toString().toUpperCase() ==
+                            serialNumber.toUpperCase() ||
+                        asset['nexgen_serial_no']?.toString().toUpperCase() ==
+                            serialNumber.toUpperCase(),
+                  )
+                  .firstOrNull;
+              if (matchingAsset != null && matchingAsset['capacity'] != null) {
+                return {'capacity': matchingAsset['capacity'].toString()};
               }
               return null;
             },

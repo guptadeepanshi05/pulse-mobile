@@ -168,24 +168,21 @@ class _BatteryV2ScreenState extends State<BatteryV2Screen> {
 
         // Extract battery modules photo and remarks from "Overall Dtl of Battery"
         String? batteryModulesImageData;
-        try {
-          final overallDtlItem = batteryAssets.firstWhere(
-            (item) => item['record_type'] == 'Overall Dtl of Battery',
+        final overallDtlItem = batteryAssets
+            .where((item) => item['record_type'] == 'Overall Dtl of Battery')
+            .firstOrNull;
+        if (overallDtlItem != null && overallDtlItem['photo_id'] != null) {
+          final photoId = overallDtlItem['photo_id'].toString();
+          Logger.debugLog(
+            '📸 Loading battery modules image with photo_id: $photoId',
           );
-          if (overallDtlItem != null) {
-            if (overallDtlItem['photo_id'] != null) {
-              final photoId = overallDtlItem['photo_id'].toString();
-              Logger.debugLog('📸 Loading battery modules image with photo_id: $photoId');
-              try {
-                batteryModulesImageData = await _service.getImageAsDataUrl(photoId);
-                Logger.debugLog('✅ Successfully loaded battery modules image');
-              } catch (e) {
-                Logger.errorLog('❌ Error loading battery modules image: $e');
-              }
-            }
+          try {
+            batteryModulesImageData = await _service.getImageAsDataUrl(photoId);
+            Logger.debugLog('✅ Successfully loaded battery modules image');
+          } catch (e) {
+            Logger.errorLog('❌ Error loading battery modules image: $e');
           }
-        } catch (e) {
-          // No "Overall Dtl of Battery" item found
+        } else {
           Logger.debugLog('No Overall Dtl of Battery item found');
         }
 
@@ -219,16 +216,14 @@ class _BatteryV2ScreenState extends State<BatteryV2Screen> {
         };
 
         // Store battery modules photo_id if exists
-        try {
-          final overallDtlItem = batteryAssets.firstWhere(
-            (item) => item['record_type'] == 'Overall Dtl of Battery',
-          );
-          if (overallDtlItem != null && overallDtlItem['photo_id'] != null) {
-            _batteryModulesPhotoId = overallDtlItem['photo_id'].toString();
-            _batteryModulesImageData = batteryModulesImageData;
-          }
-        } catch (e) {
-          // No "Overall Dtl of Battery" item found
+        final overallDtlItemForStore = batteryAssets
+            .where((item) => item['record_type'] == 'Overall Dtl of Battery')
+            .firstOrNull;
+        if (overallDtlItemForStore != null &&
+            overallDtlItemForStore['photo_id'] != null) {
+          _batteryModulesPhotoId =
+              overallDtlItemForStore['photo_id'].toString();
+          _batteryModulesImageData = batteryModulesImageData;
         }
 
         setState(() {
@@ -402,40 +397,44 @@ class _BatteryV2ScreenState extends State<BatteryV2Screen> {
       );
 
       // Update "Overall Dtl of Battery" item with photo
-      try {
-        final overallDtlItem = finalBatteryAssets.firstWhere(
+      final overallDtlItem = finalBatteryAssets
+          .where((item) => item['record_type'] == 'Overall Dtl of Battery')
+          .firstOrNull;
+      if (overallDtlItem != null) {
+        final overallDtlMap = Map<String, dynamic>.from(overallDtlItem);
+
+        // Update photo_id if battery modules image was uploaded
+        if (_batteryModulesPhotoId != null &&
+            _batteryModulesPhotoId!.isNotEmpty) {
+          overallDtlMap['photo_id'] = _batteryModulesPhotoId;
+          overallDtlMap['photo_taken_ts'] =
+              Utils.getCurrentDateTimeForAPICall();
+          Logger.debugLog(
+            '✅ Updated Overall Dtl of Battery with photo_id: $_batteryModulesPhotoId',
+          );
+        }
+
+        // Add to modified assets if there are changes
+        if (_batteryModulesPhotoId != null &&
+            _batteryModulesPhotoId!.isNotEmpty) {
+          modifiedAssetsWithAllProperties.add(overallDtlMap);
+        }
+
+        // Also update in _assetAuditData for local storage
+        final overallDtlIndex = finalBatteryAssets.indexWhere(
           (item) => item['record_type'] == 'Overall Dtl of Battery',
         );
-
-        if (overallDtlItem != null) {
-          final overallDtlMap = Map<String, dynamic>.from(overallDtlItem);
-          
-          // Update photo_id if battery modules image was uploaded
-          if (_batteryModulesPhotoId != null && _batteryModulesPhotoId!.isNotEmpty) {
-            overallDtlMap['photo_id'] = _batteryModulesPhotoId;
-            overallDtlMap['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            Logger.debugLog('✅ Updated Overall Dtl of Battery with photo_id: $_batteryModulesPhotoId');
-          }
-
-          // Add to modified assets if there are changes
-          if (_batteryModulesPhotoId != null && _batteryModulesPhotoId!.isNotEmpty) {
-            modifiedAssetsWithAllProperties.add(overallDtlMap);
-          }
-
-          // Also update in _assetAuditData for local storage
-          final overallDtlIndex = finalBatteryAssets.indexWhere(
-            (item) => item['record_type'] == 'Overall Dtl of Battery',
-          );
-          if (overallDtlIndex != -1) {
-            if (_batteryModulesPhotoId != null && _batteryModulesPhotoId!.isNotEmpty) {
-              finalBatteryAssets[overallDtlIndex]['photo_id'] = _batteryModulesPhotoId;
-              finalBatteryAssets[overallDtlIndex]['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            }
+        if (overallDtlIndex != -1) {
+          if (_batteryModulesPhotoId != null &&
+              _batteryModulesPhotoId!.isNotEmpty) {
+            finalBatteryAssets[overallDtlIndex]['photo_id'] =
+                _batteryModulesPhotoId;
+            finalBatteryAssets[overallDtlIndex]['photo_taken_ts'] =
+                Utils.getCurrentDateTimeForAPICall();
           }
         }
-      } catch (e) {
-        // No "Overall Dtl of Battery" item found
-        Logger.debugLog('No Overall Dtl of Battery item found: $e');
+      } else {
+        Logger.debugLog('No Overall Dtl of Battery item found');
       }
 
       // Update remarks
@@ -858,26 +857,24 @@ class _BatteryV2ScreenState extends State<BatteryV2Screen> {
             tableTitle: "Battery Items",
             onSerialNumberLookup: (serialNumber) {
               // Look up capacity from batteryAllAssets based on serial number
-              final allBatteries = _displayFormData?['batteryAllAssets'] as List<dynamic>? ?? [];
-              try {
-                final matchingItem = allBatteries.firstWhere(
-                  (item) {
-                    final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
-                    final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
-                    // Case-insensitive comparison to handle QR scan uppercase
-                    return mfgSerial.toUpperCase() == serialNumber.toUpperCase() || 
-                           nexgenSerial.toUpperCase() == serialNumber.toUpperCase();
-                  },
+              final allBatteries =
+                  _displayFormData?['batteryAllAssets'] as List<dynamic>? ?? [];
+              final matchingItem = allBatteries.where((item) {
+                final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
+                final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
+                // Case-insensitive comparison to handle QR scan uppercase
+                return mfgSerial.toUpperCase() == serialNumber.toUpperCase() ||
+                    nexgenSerial.toUpperCase() == serialNumber.toUpperCase();
+              }).firstOrNull;
+              if (matchingItem == null) {
+                Logger.debugLog(
+                  'No matching Battery found for serial number: $serialNumber',
                 );
-
-                return {
-                  'capacity': matchingItem['capacity']?.toString() ?? '',
-                };
-              } catch (e) {
-                // No matching item found
-                Logger.debugLog('No matching Battery found for serial number: $serialNumber');
                 return null;
               }
+              return {
+                'capacity': matchingItem['capacity']?.toString() ?? '',
+              };
             },
           ),
           getHeight(20),

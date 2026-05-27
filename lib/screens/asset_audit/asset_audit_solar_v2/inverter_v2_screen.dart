@@ -468,24 +468,22 @@ class _InverterV2ScreenState extends State<InverterV2Screen> {
           tableTitle: "Inverter Items",
           onSerialNumberLookup: (serialNumber) {
             // Look up values from allAssets based on serial number
-            final allAssets = _displayFormData?['allAssets'] as List<dynamic>? ?? [];
-            try {
-              final matchingItem = allAssets.firstWhere(
-                (item) {
-                  final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
-                  final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
-                  return mfgSerial == serialNumber || nexgenSerial == serialNumber;
-                },
+            final allAssets =
+                _displayFormData?['allAssets'] as List<dynamic>? ?? [];
+            final matchingItem = allAssets.where((item) {
+              final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
+              final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
+              return mfgSerial == serialNumber || nexgenSerial == serialNumber;
+            }).firstOrNull;
+            if (matchingItem == null) {
+              Logger.debugLog(
+                'No matching item found for serial number: $serialNumber',
               );
-
-              return {
-                'capacity': matchingItem['capacity']?.toString() ?? '',
-              };
-            } catch (e) {
-              // No matching item found
-              Logger.debugLog('No matching item found for serial number: $serialNumber');
               return null;
             }
+            return {
+              'capacity': matchingItem['capacity']?.toString() ?? '',
+            };
           },
         ),
         getHeight(15),

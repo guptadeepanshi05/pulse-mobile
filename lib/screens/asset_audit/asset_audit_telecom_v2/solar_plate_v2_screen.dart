@@ -547,27 +547,24 @@ class _SolarPlateV2ScreenState extends State<SolarPlateV2Screen> {
             final allAssets =
                 _displayFormData?['solarPanelAllAssets'] as List<dynamic>? ??
                 [];
-            try {
-              final matchingItem = allAssets.firstWhere((item) {
-                final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
-                final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
-                // Case-insensitive comparison to handle QR scan uppercase
-                return mfgSerial.toUpperCase() == serialNumber.toUpperCase() ||
-                    nexgenSerial.toUpperCase() == serialNumber.toUpperCase();
-              });
-
-              return {
-                'capacity': matchingItem['capacity']?.toString() ?? '',
-                'manufacturing_year':
-                    matchingItem['manufacturing_year']?.toString() ?? '',
-              };
-            } catch (e) {
-              // No matching item found
+            final matchingItem = allAssets.where((item) {
+              final mfgSerial = item['mfg_serial_no']?.toString() ?? '';
+              final nexgenSerial = item['nexgen_serial_no']?.toString() ?? '';
+              // Case-insensitive comparison to handle QR scan uppercase
+              return mfgSerial.toUpperCase() == serialNumber.toUpperCase() ||
+                  nexgenSerial.toUpperCase() == serialNumber.toUpperCase();
+            }).firstOrNull;
+            if (matchingItem == null) {
               Logger.debugLog(
                 'No matching item found for serial number: $serialNumber',
               );
               return null;
             }
+            return {
+              'capacity': matchingItem['capacity']?.toString() ?? '',
+              'manufacturing_year':
+                  matchingItem['manufacturing_year']?.toString() ?? '',
+            };
           },
         ),
         getHeight(20),

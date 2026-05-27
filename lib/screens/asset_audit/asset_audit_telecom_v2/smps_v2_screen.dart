@@ -122,47 +122,48 @@ class _SMPSV2ScreenState extends State<SMPSV2Screen> {
 
         // Extract SMPS photo from "Overall Dtl of SMPS"
         String? smpsImageData;
-        try {
-          final overallSMPSDtlItem = smpsAssets.firstWhere(
-            (item) => item['record_type'] == 'Overall Dtl of SMPS',
-          );
-          if (overallSMPSDtlItem != null && overallSMPSDtlItem['photo_id'] != null) {
-            final photoId = overallSMPSDtlItem['photo_id'].toString();
-            Logger.debugLog('📸 Loading SMPS image with photo_id: $photoId');
-            try {
-              smpsImageData = await _service.getImageAsDataUrl(photoId);
-              _smpsImagePhotoId = photoId;
-              _smpsImageData = smpsImageData;
-              Logger.debugLog('✅ Successfully loaded SMPS image');
-            } catch (e) {
-              Logger.errorLog('❌ Error loading SMPS image: $e');
-            }
+        final overallSMPSDtlItem = smpsAssets
+            .where((item) => item['record_type'] == 'Overall Dtl of SMPS')
+            .firstOrNull;
+        if (overallSMPSDtlItem != null &&
+            overallSMPSDtlItem['photo_id'] != null) {
+          final photoId = overallSMPSDtlItem['photo_id'].toString();
+          Logger.debugLog('📸 Loading SMPS image with photo_id: $photoId');
+          try {
+            smpsImageData = await _service.getImageAsDataUrl(photoId);
+            _smpsImagePhotoId = photoId;
+            _smpsImageData = smpsImageData;
+            Logger.debugLog('✅ Successfully loaded SMPS image');
+          } catch (e) {
+            Logger.errorLog('❌ Error loading SMPS image: $e');
           }
-        } catch (e) {
-          // No "Overall Dtl of SMPS" item found
+        } else {
           Logger.debugLog('No Overall Dtl of SMPS item found');
         }
 
         // Extract Rectifiers photo from "Overall Dtl of SMPS Rectifiers"
         String? rectifiersImageData;
-        try {
-          final overallRectifiersDtlItem = smpsRectifiers.firstWhere(
-            (item) => item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+        final overallRectifiersDtlItem = smpsRectifiers
+            .where(
+              (item) =>
+                  item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+            )
+            .firstOrNull;
+        if (overallRectifiersDtlItem != null &&
+            overallRectifiersDtlItem['photo_id'] != null) {
+          final photoId = overallRectifiersDtlItem['photo_id'].toString();
+          Logger.debugLog(
+            '📸 Loading SMPS Rectifiers image with photo_id: $photoId',
           );
-          if (overallRectifiersDtlItem != null && overallRectifiersDtlItem['photo_id'] != null) {
-            final photoId = overallRectifiersDtlItem['photo_id'].toString();
-            Logger.debugLog('📸 Loading SMPS Rectifiers image with photo_id: $photoId');
-            try {
-              rectifiersImageData = await _service.getImageAsDataUrl(photoId);
-              _rectifiersImagePhotoId = photoId;
-              _rectifiersImageData = rectifiersImageData;
-              Logger.debugLog('✅ Successfully loaded SMPS Rectifiers image');
-            } catch (e) {
-              Logger.errorLog('❌ Error loading SMPS Rectifiers image: $e');
-            }
+          try {
+            rectifiersImageData = await _service.getImageAsDataUrl(photoId);
+            _rectifiersImagePhotoId = photoId;
+            _rectifiersImageData = rectifiersImageData;
+            Logger.debugLog('✅ Successfully loaded SMPS Rectifiers image');
+          } catch (e) {
+            Logger.errorLog('❌ Error loading SMPS Rectifiers image: $e');
           }
-        } catch (e) {
-          // No "Overall Dtl of SMPS Rectifiers" item found
+        } else {
           Logger.debugLog('No Overall Dtl of SMPS Rectifiers item found');
         }
 
@@ -312,38 +313,45 @@ class _SMPSV2ScreenState extends State<SMPSV2Screen> {
       );
 
       // Update "Overall Dtl of SMPS Rectifiers" item with photo
-      try {
-        final overallRectifiersDtlItem = finalSMPSRectifiers.firstWhere(
-          (item) => item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+      final overallRectifiersDtlItem = finalSMPSRectifiers
+          .where(
+            (item) => item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+          )
+          .firstOrNull;
+      if (overallRectifiersDtlItem != null) {
+        final overallRectifiersDtlMap = Map<String, dynamic>.from(
+          overallRectifiersDtlItem,
         );
 
-        if (overallRectifiersDtlItem != null) {
-          final overallRectifiersDtlMap = Map<String, dynamic>.from(overallRectifiersDtlItem);
-          
-          // Update photo_id if rectifiers image was uploaded
-          if (_rectifiersImagePhotoId != null && _rectifiersImagePhotoId!.isNotEmpty) {
-            overallRectifiersDtlMap['photo_id'] = _rectifiersImagePhotoId;
-            overallRectifiersDtlMap['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            Logger.debugLog('✅ Updated Overall Dtl of SMPS Rectifiers with photo_id: $_rectifiersImagePhotoId');
-            
-            // Add to modified assets when photo is uploaded
-            modifiedAssetsWithAllProperties.add(overallRectifiersDtlMap);
-          }
-
-          // Also update in _assetAuditData for local storage
-          final overallRectifiersDtlIndex = finalSMPSRectifiers.indexWhere(
-            (item) => item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+        // Update photo_id if rectifiers image was uploaded
+        if (_rectifiersImagePhotoId != null &&
+            _rectifiersImagePhotoId!.isNotEmpty) {
+          overallRectifiersDtlMap['photo_id'] = _rectifiersImagePhotoId;
+          overallRectifiersDtlMap['photo_taken_ts'] =
+              Utils.getCurrentDateTimeForAPICall();
+          Logger.debugLog(
+            '✅ Updated Overall Dtl of SMPS Rectifiers with photo_id: $_rectifiersImagePhotoId',
           );
-          if (overallRectifiersDtlIndex != -1) {
-            if (_rectifiersImagePhotoId != null && _rectifiersImagePhotoId!.isNotEmpty) {
-              finalSMPSRectifiers[overallRectifiersDtlIndex]['photo_id'] = _rectifiersImagePhotoId;
-              finalSMPSRectifiers[overallRectifiersDtlIndex]['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            }
+
+          // Add to modified assets when photo is uploaded
+          modifiedAssetsWithAllProperties.add(overallRectifiersDtlMap);
+        }
+
+        // Also update in _assetAuditData for local storage
+        final overallRectifiersDtlIndex = finalSMPSRectifiers.indexWhere(
+          (item) => item['record_type'] == 'Overall Dtl of SMPS Rectifiers',
+        );
+        if (overallRectifiersDtlIndex != -1) {
+          if (_rectifiersImagePhotoId != null &&
+              _rectifiersImagePhotoId!.isNotEmpty) {
+            finalSMPSRectifiers[overallRectifiersDtlIndex]['photo_id'] =
+                _rectifiersImagePhotoId;
+            finalSMPSRectifiers[overallRectifiersDtlIndex]['photo_taken_ts'] =
+                Utils.getCurrentDateTimeForAPICall();
           }
         }
-      } catch (e) {
-        // No "Overall Dtl of SMPS Rectifiers" item found
-        Logger.debugLog('No Overall Dtl of SMPS Rectifiers item found: $e');
+      } else {
+        Logger.debugLog('No Overall Dtl of SMPS Rectifiers item found');
       }
 
       // Add SMPS Cabinet
@@ -357,38 +365,41 @@ class _SMPSV2ScreenState extends State<SMPSV2Screen> {
       );
 
       // Update "Overall Dtl of SMPS" item with photo
-      try {
-        final overallSMPSDtlItem = finalSMPSAssets.firstWhere(
-          (item) => item['record_type'] == 'Overall Dtl of SMPS',
+      final overallSMPSDtlItem = finalSMPSAssets
+          .where((item) => item['record_type'] == 'Overall Dtl of SMPS')
+          .firstOrNull;
+      if (overallSMPSDtlItem != null) {
+        final overallSMPSDtlMap = Map<String, dynamic>.from(
+          overallSMPSDtlItem,
         );
 
-        if (overallSMPSDtlItem != null) {
-          final overallSMPSDtlMap = Map<String, dynamic>.from(overallSMPSDtlItem);
-          
-          // Update photo_id if SMPS image was uploaded
-          if (_smpsImagePhotoId != null && _smpsImagePhotoId!.isNotEmpty) {
-            overallSMPSDtlMap['photo_id'] = _smpsImagePhotoId;
-            overallSMPSDtlMap['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            Logger.debugLog('✅ Updated Overall Dtl of SMPS with photo_id: $_smpsImagePhotoId');
-            
-            // Add to modified assets when photo is uploaded
-            modifiedAssetsWithAllProperties.add(overallSMPSDtlMap);
-          }
-
-          // Also update in _assetAuditData for local storage
-          final overallSMPSDtlIndex = finalSMPSAssets.indexWhere(
-            (item) => item['record_type'] == 'Overall Dtl of SMPS',
+        // Update photo_id if SMPS image was uploaded
+        if (_smpsImagePhotoId != null && _smpsImagePhotoId!.isNotEmpty) {
+          overallSMPSDtlMap['photo_id'] = _smpsImagePhotoId;
+          overallSMPSDtlMap['photo_taken_ts'] =
+              Utils.getCurrentDateTimeForAPICall();
+          Logger.debugLog(
+            '✅ Updated Overall Dtl of SMPS with photo_id: $_smpsImagePhotoId',
           );
-          if (overallSMPSDtlIndex != -1) {
-            if (_smpsImagePhotoId != null && _smpsImagePhotoId!.isNotEmpty) {
-              finalSMPSAssets[overallSMPSDtlIndex]['photo_id'] = _smpsImagePhotoId;
-              finalSMPSAssets[overallSMPSDtlIndex]['photo_taken_ts'] = Utils.getCurrentDateTimeForAPICall();
-            }
+
+          // Add to modified assets when photo is uploaded
+          modifiedAssetsWithAllProperties.add(overallSMPSDtlMap);
+        }
+
+        // Also update in _assetAuditData for local storage
+        final overallSMPSDtlIndex = finalSMPSAssets.indexWhere(
+          (item) => item['record_type'] == 'Overall Dtl of SMPS',
+        );
+        if (overallSMPSDtlIndex != -1) {
+          if (_smpsImagePhotoId != null && _smpsImagePhotoId!.isNotEmpty) {
+            finalSMPSAssets[overallSMPSDtlIndex]['photo_id'] =
+                _smpsImagePhotoId;
+            finalSMPSAssets[overallSMPSDtlIndex]['photo_taken_ts'] =
+                Utils.getCurrentDateTimeForAPICall();
           }
         }
-      } catch (e) {
-        // No "Overall Dtl of SMPS" item found
-        Logger.debugLog('No Overall Dtl of SMPS item found: $e');
+      } else {
+        Logger.debugLog('No Overall Dtl of SMPS item found');
       }
 
       // Update remarks in-memory too so SQLite/open-back shows latest value.
