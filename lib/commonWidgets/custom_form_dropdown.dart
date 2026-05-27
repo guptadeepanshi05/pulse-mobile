@@ -49,6 +49,12 @@ class _CustomDropdownState extends State<CustomDropdown> {
         widget.items.contains(widget.initialValue)) {
       setState(() => selectedValue = widget.initialValue);
     }
+    // If the items list changed and the currently selected value is no
+    // longer present (e.g. dropdown was reloaded), clear it so the next
+    // build doesn't fail the DropdownButton2 "exactly one item" assertion.
+    if (selectedValue != null && !widget.items.contains(selectedValue)) {
+      setState(() => selectedValue = null);
+    }
   }
 
   @override
@@ -57,8 +63,25 @@ class _CustomDropdownState extends State<CustomDropdown> {
     super.dispose();
   }
 
+  /// Deduplicate while preserving the original order so we never feed
+  /// [DropdownButton2] two items with the same `value` — that triggers an
+  /// assertion crash:
+  /// "There should be exactly one item with [DropdownButton]'s value: ..."
+  /// (e.g. server returned the same asset code twice).
+  List<String> _uniqueItems() {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final item in widget.items) {
+      if (seen.add(item)) out.add(item);
+    }
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final items = _uniqueItems();
+    final hasValidSelection =
+        selectedValue != null && items.contains(selectedValue);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -107,7 +130,7 @@ class _CustomDropdownState extends State<CustomDropdown> {
                 fontFamily: fontFamilyMontserrat,
               ),
             ),
-            items: widget.items.map((item) {
+            items: items.map((item) {
               return DropdownMenuItem<String>(
                 value: item,
                 child: Text(
@@ -121,10 +144,7 @@ class _CustomDropdownState extends State<CustomDropdown> {
                 ),
               );
             }).toList(),
-            value:
-                (selectedValue != null && widget.items.contains(selectedValue))
-                ? selectedValue
-                : null,
+            value: hasValidSelection ? selectedValue : null,
             onChanged: widget.isDisabled
                 ? null
                 : (value) {
