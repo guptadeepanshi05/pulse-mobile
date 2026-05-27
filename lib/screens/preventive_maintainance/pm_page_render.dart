@@ -185,6 +185,7 @@ class _PMPageRenderState extends State<PMPageRender> {
 
   Future<void> _onNextPage() async {
     // Update data in SQLite before navigating to next page (except for Site Info page)
+    if (!mounted) return;
     LoaderWidget.showLoader(context);
 
     try {
@@ -192,6 +193,11 @@ class _PMPageRenderState extends State<PMPageRender> {
       if (!_isFirstPage && _hasChanges) {
         await _updateDataInSqliteAndCallApi();
       }
+
+      // SQLite write + API post can take seconds; if the user pops this
+      // screen during the await, calling setState below would crash with
+      // "Null check operator used on a null value" inside State.setState.
+      if (!mounted) return;
 
       // Navigate to next page if not on last page
       if (!_isLastPage) {
@@ -202,7 +208,7 @@ class _PMPageRenderState extends State<PMPageRender> {
         _clearWidgetState();
       }
     } finally {
-      // Hide loader
+      // Hide loader (safe to call even after unmount; LoaderWidget is global).
       LoaderWidget.hideLoader();
     }
   }
@@ -210,6 +216,7 @@ class _PMPageRenderState extends State<PMPageRender> {
   // Wrapper method to pass hasChanges parameter
   Future<void> _onNextPageWrapper() async {
     await _onNextPage();
+    if (!mounted) return;
     // Reset changes flag after navigation
     _hasChanges = false;
   }
@@ -287,6 +294,7 @@ class _PMPageRenderState extends State<PMPageRender> {
   }
 
   Future<void> _updateDataInSqliteAndCallApiWithLoader() async {
+    if (!mounted) return;
     try {
       LoaderWidget.showLoader(context);
       await _updateDataInSqliteAndCallApi();
@@ -345,6 +353,7 @@ class _PMPageRenderState extends State<PMPageRender> {
   }
 
   void _onSubmit() async {
+    if (!mounted) return;
     try {
       // Ensure loader is hidden even on last-page submit.
       LoaderWidget.showLoader(context);
