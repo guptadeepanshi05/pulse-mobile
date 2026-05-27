@@ -80,7 +80,15 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    // Capture and null out first so any rebuild during teardown can't
+    // accidentally trigger a second dispose on the same controller.
+    final controller = _controller;
+    _controller = null;
+    // CameraController.dispose() is async and, under camera_android_camerax,
+    // can throw a PlatformException (NullPointerException on Surface.release())
+    // when the Flutter engine has already released the surface texture.
+    // Swallow it — there's nothing actionable here and the resources are gone.
+    controller?.dispose().catchError((_) {});
     super.dispose();
   }
 
