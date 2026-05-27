@@ -117,6 +117,9 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
       if (!mounted) return;
       setState(() {
         _assetCodes = dropdown.allAssets;
+        // Pre-select the first asset code so users see a default selection
+        // immediately after picking an asset type. They can still change it.
+        _selectedAssetCode = _assetCodes.isNotEmpty ? _assetCodes.first : null;
         _isLoadingAssetCodes = false;
       });
     } catch (e) {
@@ -397,9 +400,13 @@ class _CreateRaiseItTicketScreenState extends State<CreateRaiseItTicketScreen> {
                                 ),
                                 getHeight(16),
                                 CustomDropdown(
+                                  key: ValueKey(
+                                    'asset_code_${_selectedAssetType?.iatmId ?? 'none'}',
+                                  ),
                                   label: 'Asset Code',
                                   isRequired: true,
                                   items: _assetCodes.map((c) => c.asset).toList(),
+                                  initialValue: _selectedAssetCode?.asset,
                                   isDisabled: _selectedAssetType == null ||
                                       _isLoadingAssetCodes,
                                   onChanged: _onAssetCodeChanged,
