@@ -83,6 +83,9 @@ class _SimpleAssetAuditFormComponentState extends State<SimpleAssetAuditFormComp
         false,
         widget.siteAuditSchId,
       );
+      // If the user navigated away during the upload, bail out entirely so we
+      // don't call setState / use BuildContext on a disposed widget. The
+      // `finally` block below is also guarded for the same reason.
       if (!mounted) return;
 
       if (photoId.isNotEmpty) {
@@ -101,11 +104,19 @@ class _SimpleAssetAuditFormComponentState extends State<SimpleAssetAuditFormComp
       }
     } catch (e) {
       Logger.errorLog('❌ Error uploading image: $e');
+      // Guard context use — the upload future may have completed while the
+      // widget was unmounted, in which case showCustomToast must be skipped.
+      if (!mounted) return;
       showCustomToast(context, 'Failed to upload image: $e');
     } finally {
-      setState(() {
-        _isUploading = false;
-      });
+      // `finally` runs even when we returned early via `if (!mounted) return;`
+      // above. Without this guard we'd hit `Null check operator used on a null
+      // value` inside State.setState on a disposed widget.
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+        });
+      }
     }
   }
 

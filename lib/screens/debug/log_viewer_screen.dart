@@ -148,13 +148,19 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
     try {
       final apiService = AppConfig.of(context).apiService;
       await LogPushService.pushLogsNow(apiService);
+      if (!mounted) return;
       _showSuccessSnackBar('Logs pushed to backend successfully');
     } catch (e) {
+      if (!mounted) return;
       _showErrorSnackBar('Failed to push logs: $e');
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      // Guard against the user popping the screen during the push — setState
+      // on a disposed widget throws "Null check operator used on a null value".
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
