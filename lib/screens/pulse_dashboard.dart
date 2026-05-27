@@ -590,7 +590,7 @@ class _PulseDashboardState extends State<PulseDashboard> {
       case 85:
         return AppImages.assetUpload;
       case 86:
-        return AppImages.project;
+        return AppImages.activity;
       case 87:
         return AppImages.siteaccess;
       case 88:

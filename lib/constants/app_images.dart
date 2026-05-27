@@ -27,7 +27,8 @@ class AppImages {
   static const String energyReading = '${_basePath}er.svg';
   static const String inspection = '${_basePath}inspection.svg';
   static const String siteaccess = '${_basePath}siteaccess.svg';
-  static const String project = '${_basePath}projects.svg';
+  static const String project = '${_basePath}project.svg';
+  static const String activity = '${_basePath}activity.svg';
   static const String warehouse = '${_basePath}warehouse.svg';
   static const String theft = '${_basePath}theft.svg';
   static const String incident = '${_basePath}incident_ticket.svg';
