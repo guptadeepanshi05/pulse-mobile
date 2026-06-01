@@ -56,24 +56,26 @@ class TicketService {
             );
           }
         } else if (responseData is List<dynamic>) {
-          // API returned a list directly - wrap it in TicketResponse
+          // API returned a list directly - wrap it in TicketResponse.
+          // totalRecords is unknown in this case; leave it as 0 so the cubit
+          // falls back to "lastBatchSize < requestedPageSize" to detect end.
           try {
-
-            final tickets = (responseData as List<dynamic>)
+            final tickets = responseData
                 .map((ticket) {
                   debugPrint("   Parsing ticket: $ticket");
-                  return Ticket.fromJson(ticket);
+                  return Ticket.fromJson(ticket as Map<String, dynamic>);
                 })
                 .toList();
-            
+
             final ticketResponse = TicketResponse(
-              pageNo: 1,
-              pageSize: tickets.length,
-              totalRecords: tickets.length,
+              pageNo: pageNo ?? 1,
+              pageSize: pageSize ?? tickets.length,
+              totalRecords: 0,
               tickets: tickets,
             );
-            
-            debugPrint("✅ Successfully converted list to TicketResponse with ${tickets.length} tickets");
+
+            debugPrint(
+                "✅ Successfully converted list to TicketResponse with ${tickets.length} tickets (totalRecords unknown)");
             return ResponseResult.success(ticketResponse, response.statusCode);
           } catch (e) {
             debugPrint("❌ Failed to parse ticket list: $e");

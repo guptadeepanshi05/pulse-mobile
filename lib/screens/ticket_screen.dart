@@ -20,6 +20,7 @@ import 'package:app/utils/map_api_field_reader.dart';
 import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:app/utils/connectivity_helper.dart';
+import 'package:flutter/foundation.dart' show SynchronousFuture;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -60,6 +61,10 @@ class _TicketScreenState extends State<TicketScreen>
   late String _currentTicketType;
   late ActivityTypeEnum _currentActivityType;
   final Set<int> _downloadedTicketIds = <int>{};
+  // In-memory cache of "is this ticket downloaded" answers per ticketSchId.
+  // Lets [_isTicketDownloaded] return a [SynchronousFuture] on rebuild so the
+  // per-card FutureBuilder doesn't re-query SQLite (and flicker) every frame.
+  final Map<int, bool> _downloadedCache = <int, bool>{};
   bool _isInitializingDownloadedTickets = false;
   bool _hasLoadedOnce =
       false; // Track if tickets have been loaded at least once
@@ -67,10 +72,21 @@ class _TicketScreenState extends State<TicketScreen>
       _lastRefreshTime; // Track last refresh time to prevent too frequent refreshes
   bool _wasRouteActive = true; // Track if route was previously active
 
+  // Pagination: fixed page size; current page is tracked inside [TicketCubit].
+  static const int _pageSize = 50;
+  // Distance from list bottom (in px) that triggers the next page fetch.
+  static const double _loadMoreThreshold = 300.0;
+  // Show the back-to-top FAB once the user has scrolled past this many pixels.
+  static const double _showScrollToTopAfter = 500.0;
+  final ScrollController _scrollController = ScrollController();
+  // Whether the scroll-to-top FAB should be visible. Driven by [_onScroll].
+  bool _showScrollToTop = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _scrollController.addListener(_onScroll);
 
     _currentTicketType = _getInitialTicketTypeFromStatus(widget.status);
     _currentActivityType = _getActivityTypeFromAuditName(widget.auditName);
@@ -97,8 +113,54 @@ class _TicketScreenState extends State<TicketScreen>
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// Resolve the activity type string sent to the API. Incident tickets use a
+  /// different code than the enum value.
+  String get _apiActivityType => _currentActivityType == ActivityTypeEnum.incident
+      ? 'IT'
+      : _currentActivityType.value;
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - _loadMoreThreshold) {
+      _loadMoreTickets();
+    }
+
+    // Toggle the back-to-top FAB visibility. setState only when the value
+    // actually changes so we don't rebuild on every pixel of scroll.
+    final shouldShow = position.pixels > _showScrollToTopAfter;
+    if (shouldShow != _showScrollToTop) {
+      setState(() => _showScrollToTop = shouldShow);
+    }
+  }
+
+  void _scrollToTop() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _loadMoreTickets() {
+    if (!mounted) return;
+    final cubit = context.read<TicketCubit>();
+    final currentState = cubit.state;
+    if (currentState is! TicketSuccess) return;
+    if (currentState.isLoadingMore || currentState.hasReachedMax) return;
+
+    cubit.loadMoreTickets(
+      activityType: _apiActivityType,
+      ticketType: _currentTicketType,
+      pageSize: _pageSize,
+    );
   }
 
   @override
@@ -154,6 +216,10 @@ class _TicketScreenState extends State<TicketScreen>
   void _refreshTickets() {
     final now = DateTime.now();
     _lastRefreshTime = now;
+    // Drop cached "not downloaded" answers so any newly downloaded tickets
+    // (e.g., grabbed from a sub-screen workflow) are re-detected from SQLite.
+    // Keep confirmed "true" entries to avoid a tick icon flicker on refresh.
+    _downloadedCache.removeWhere((_, isDownloaded) => isDownloaded == false);
     _loadTickets();
 
     // Re-initialize downloaded tickets state after a short delay
@@ -168,21 +234,12 @@ class _TicketScreenState extends State<TicketScreen>
   }
 
   void _loadTickets() {
-    if (_currentActivityType == ActivityTypeEnum.incident) {
-      context.read<TicketCubit>().getTickets(
-        activityType: 'IT',
-        ticketType: _currentTicketType,
-        pageSize: 50,
-        pageNo: 1,
-      );
-    } else {
-      context.read<TicketCubit>().getTickets(
-        activityType: _currentActivityType.value,
-        ticketType: _currentTicketType,
-        pageSize: 50,
-        pageNo: 1,
-      );
-    }
+    context.read<TicketCubit>().getTickets(
+      activityType: _apiActivityType,
+      ticketType: _currentTicketType,
+      pageSize: _pageSize,
+      pageNo: 1,
+    );
   }
 
   void _initializeDownloadedTickets(List<Ticket> tickets) async {
@@ -195,6 +252,8 @@ class _TicketScreenState extends State<TicketScreen>
       // Check which tickets are already downloaded and populate local state
       for (final ticket in tickets) {
         final isDownloaded = await _isTicketDownloaded(ticket);
+        // _isTicketDownloaded already memoises; we just need to flip the
+        // tracked set + trigger a rebuild for newly-discovered downloads.
         if (isDownloaded &&
             !_downloadedTicketIds.contains(ticket.ticketSchId)) {
           _downloadedTicketIds.add(ticket.ticketSchId);
@@ -1123,20 +1182,34 @@ class _TicketScreenState extends State<TicketScreen>
     }
   }
 
-  Future<bool> _isTicketDownloaded(Ticket ticket) async {
-    // Check local state first (for recently downloaded tickets)
+  Future<bool> _isTicketDownloaded(Ticket ticket) {
+    // 1. Synchronous fast path: in-memory cache or known-downloaded set.
+    //    SynchronousFuture lets FutureBuilder skip the loading state entirely,
+    //    which is the difference between a smooth scroll and a hitchy one when
+    //    100+ cards rebuild after appending a page.
+    final cached = _downloadedCache[ticket.ticketSchId];
+    if (cached != null) return SynchronousFuture<bool>(cached);
     if (_downloadedTicketIds.contains(ticket.ticketSchId)) {
-      return true;
+      _downloadedCache[ticket.ticketSchId] = true;
+      return SynchronousFuture<bool>(true);
     }
+    // 2. Slow path: actually hit SQLite, then memoise.
+    return _computeDownloadedFromSqlite(ticket).then((isDownloaded) {
+      _downloadedCache[ticket.ticketSchId] = isDownloaded;
+      if (isDownloaded) _downloadedTicketIds.add(ticket.ticketSchId);
+      return isDownloaded;
+    });
+  }
 
+  Future<bool> _computeDownloadedFromSqlite(Ticket ticket) async {
     // Handle General Inspection tickets differently
     if (_currentActivityType == ActivityTypeEnum.generalInspection) {
-      // For GI tickets, check if checklist data is downloaded
       return await ServiceLocator().centralAssetAuditDataService
           .isGIChecklistDownloaded(ticket.ticketSchId);
     }
     if (_currentActivityType == ActivityTypeEnum.assetUpload) {
-      // AU: row may be keyed by ticketSchId (downloaded from ticket screen) or siteId (downloaded from All Sites)
+      // AU: row may be keyed by ticketSchId (downloaded from ticket screen)
+      // or siteId (downloaded from All Sites).
       RawApiDataModel? data = await ServiceLocator().centralAssetAuditService
           .getDataFromSqlite(siteAuditSchId: ticket.ticketSchId.toString());
       if (data != null && data.isDownloaded) return true;
@@ -1148,7 +1221,7 @@ class _TicketScreenState extends State<TicketScreen>
       return false;
     }
     // For other ticket types, check database for existing downloads
-    RawApiDataModel? data = await ServiceLocator().centralAssetAuditService
+    final data = await ServiceLocator().centralAssetAuditService
         .getDataFromSqlite(siteAuditSchId: ticket.ticketSchId.toString());
     return data != null && data.isDownloaded;
   }
@@ -1220,15 +1293,27 @@ class _TicketScreenState extends State<TicketScreen>
                         ),
                       );
                     } else {
-                      // Show ticket list
-                      return SingleChildScrollView(
-                        child: Column(
-                          children: [
-                            getHeight(15),
-                            _buildTicketList(state.ticketResponse),
-                            getHeight(20),
-                          ],
-                        ),
+                      // Show ticket list with lazy-load pagination.
+                      // CustomScrollView + SliverList builds cards on demand
+                      // as they scroll into view, so growing the list past
+                      // 50/100/200 items doesn't increase per-rebuild cost.
+                      return CustomScrollView(
+                        controller: _scrollController,
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        slivers: [
+                          const SliverToBoxAdapter(
+                              child: SizedBox(height: 15)),
+                          _buildTicketListSliver(state.ticketResponse),
+                          if (state.isLoadingMore)
+                            SliverToBoxAdapter(
+                                child: _buildLoadMoreIndicator()),
+                          if (state.hasReachedMax &&
+                              state.ticketResponse.tickets.length >= _pageSize)
+                            SliverToBoxAdapter(
+                                child: _buildEndOfListIndicator()),
+                          const SliverToBoxAdapter(
+                              child: SizedBox(height: 20)),
+                        ],
                       );
                     }
                   } else if (state is TicketFailure) {
@@ -1297,10 +1382,8 @@ class _TicketScreenState extends State<TicketScreen>
     );
   }
 
-  Widget _buildTicketList(TicketResponse ticketResponse) {
-    return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
+  Widget _buildTicketListSliver(TicketResponse ticketResponse) {
+    return SliverList.builder(
       itemCount: ticketResponse.tickets.length,
       itemBuilder: (itemContext, index) {
         final ticket = ticketResponse.tickets[index];
@@ -1477,6 +1560,7 @@ class _TicketScreenState extends State<TicketScreen>
                   // Add to local state and trigger UI update
                   setState(() {
                     _downloadedTicketIds.add(ticket.ticketSchId);
+                    _downloadedCache[ticket.ticketSchId] = true;
                   });
 
                   // Re-initialize downloaded tickets state to ensure consistency
@@ -1505,6 +1589,53 @@ class _TicketScreenState extends State<TicketScreen>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildLoadMoreIndicator() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 20.0),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              height: 22,
+              width: 22,
+              child: CircularProgressIndicator(
+                color: AppColors.primaryGreen,
+                strokeWidth: 2.5,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Loading more tickets…',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.85),
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                fontFamily: fontFamilyMontserrat,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEndOfListIndicator() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16.0),
+      child: Center(
+        child: Text(
+          'No more tickets',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.7),
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
     );
   }
 
@@ -1623,36 +1754,59 @@ class _TicketScreenState extends State<TicketScreen>
   }
 
   Widget _buildFloatingActionButtons() {
-    if (_currentActivityType == ActivityTypeEnum.siteVisit ||
-        _currentActivityType == ActivityTypeEnum.generalInspection ||
-        _currentActivityType == ActivityTypeEnum.incident ||
-        _currentActivityType == ActivityTypeEnum.assetUpload) {
-      // Show both add button and sync button for SV/GI
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          if (_canShowAddButton()) ...[
-            FloatingActionButton(
-              onPressed: _onFloatingButtonPressed,
-              backgroundColor: AppColors.primaryGreen,
-              heroTag: "add_fab",
-              child: const Icon(Icons.add, color: Colors.white, size: 28),
-            ),
-            const SizedBox(height: 16),
-          ],
-          FloatingActionButton(
-            onPressed: _syncOfflineData,
-            backgroundColor: Colors.blue,
-            heroTag: "sync_fab",
-            child: const Icon(Icons.sync, color: Colors.white),
-            tooltip: 'Sync Offline Data',
-          ),
-        ],
-      );
-    } else {
-      // Show only sync button for other activity types
+    final showAddSyncButtons =
+        _currentActivityType == ActivityTypeEnum.siteVisit ||
+            _currentActivityType == ActivityTypeEnum.generalInspection ||
+            _currentActivityType == ActivityTypeEnum.incident ||
+            _currentActivityType == ActivityTypeEnum.assetUpload;
+
+    // Nothing to show: hide the FAB area entirely.
+    if (!showAddSyncButtons && !_showScrollToTop) {
       return const SizedBox.shrink();
     }
+
+    final children = <Widget>[];
+
+    if (showAddSyncButtons) {
+      if (_canShowAddButton()) {
+        children.add(FloatingActionButton(
+          onPressed: _onFloatingButtonPressed,
+          backgroundColor: AppColors.primaryGreen,
+          heroTag: "add_fab",
+          child: const Icon(Icons.add, color: Colors.white, size: 28),
+        ));
+        children.add(const SizedBox(height: 16));
+      }
+      children.add(FloatingActionButton(
+        onPressed: _syncOfflineData,
+        backgroundColor: Colors.blue,
+        heroTag: "sync_fab",
+        tooltip: 'Sync Offline Data',
+        child: const Icon(Icons.sync, color: Colors.white),
+      ));
+    }
+
+    // Back-to-top FAB: appears once user has scrolled past
+    // [_showScrollToTopAfter]; tapping animates the list to offset 0.
+    if (_showScrollToTop) {
+      if (children.isNotEmpty) {
+        children.add(const SizedBox(height: 12));
+      }
+      children.add(FloatingActionButton(
+        onPressed: _scrollToTop,
+        backgroundColor: AppColors.primaryGreen,
+        heroTag: "scroll_to_top_fab",
+        mini: true,
+        tooltip: 'Back to top',
+        child: const Icon(Icons.arrow_upward, color: Colors.white),
+      ));
+    }
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: children,
+    );
   }
 
   bool _canShowAddButton() {

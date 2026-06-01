@@ -15,15 +15,41 @@ class TicketResponse extends Equatable {
   });
 
   factory TicketResponse.fromJson(Map<String, dynamic> json) {
-    return TicketResponse(
-      pageNo: int.tryParse(json['pageNo'].toString()) ?? 1,
-      pageSize: int.tryParse(json['pageSize'].toString()) ?? 50,
-      totalRecords: int.tryParse(json['totalRecords'].toString()) ?? 0,
-      tickets: (json['tickets'] as List<dynamic>?)
-              ?.map((ticket) => Ticket.fromJson(ticket))
+    int? _readInt(List<String> keys) {
+      for (final key in keys) {
+        final v = json[key];
+        if (v == null) continue;
+        final parsed = int.tryParse(v.toString());
+        if (parsed != null) return parsed;
+      }
+      return null;
+    }
+
+    final ticketsList = (json['tickets'] ??
+            json['data'] ??
+            json['records'] ??
+            json['items']) as List<dynamic>?;
+
+    final response = TicketResponse(
+      pageNo: _readInt(['pageNo', 'page_no', 'pageNumber', 'page_number']) ?? 1,
+      pageSize: _readInt(['pageSize', 'page_size']) ?? 50,
+      // 0 here means "unknown" – the cubit falls back to lastBatchSize <
+      // pageSize to detect the end when the server doesn't return a total.
+      totalRecords:
+          _readInt(['totalRecords', 'total_records', 'total', 'totalCount']) ??
+              0,
+      tickets: ticketsList
+              ?.map((ticket) => Ticket.fromJson(ticket as Map<String, dynamic>))
               .toList() ??
           [],
     );
+
+    debugPrint(
+      "📦 TicketResponse parsed → pageNo=${response.pageNo}, "
+      "pageSize=${response.pageSize}, totalRecords=${response.totalRecords}, "
+      "tickets=${response.tickets.length}",
+    );
+    return response;
   }
 
   Map<String, dynamic> toJson() {
