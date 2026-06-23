@@ -23,6 +23,7 @@ import 'database/asset_audit_database.dart';
 import 'services/app_initialization_service.dart';
 import 'utils.dart';
 import 'utils/CrashLogger.dart';
+import 'utils/app_version_helper.dart';
 import 'utils/file_logger.dart';
 import 'services/log_push_service.dart';
 import 'services/log_push_config.dart';
@@ -185,6 +186,9 @@ Future<void> init() async {
 
   // Initialize location permissions
   await _initializeLocationPermissions();
+
+  // Cache app version before any API calls (e.g. login App-Version header).
+  await AppVersionHelper.init();
 }
 
 late AppLinks _appLinks;

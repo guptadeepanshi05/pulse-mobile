@@ -10,6 +10,7 @@ import 'local_storage_db.dart';
 import '../routes/routes.dart';
 import '../bloc/global_loading_cubit.dart';
 import '../utils/api_logger.dart';
+import '../utils/app_version_helper.dart';
 
 /// ApiProvider handles HTTP requests with Dio
 ///
@@ -89,6 +90,10 @@ class ApiProvider {
         onRequest: (options, handler) async {
           // Log the request
           ApiLogger.logRequest(options);
+
+          if (AppVersionHelper.requiresAppVersionHeader(options.path)) {
+            await AppVersionHelper.attachAppVersionHeader(options.headers);
+          }
 
           final isAuthEndpoint = options.path.contains('authenticate/login');
 
