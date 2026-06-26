@@ -156,105 +156,108 @@ class _CMAllSitesScreenState extends State<CMAllSitesScreen> {
       // Show loader immediately when site is clicked
       LoaderWidget.showLoader(context);
 
+      final siteLat = allSiteModel?.latitude != null
+          ? double.tryParse(allSiteModel!.latitude!)
+          : null;
+      final siteLng = allSiteModel?.longitude != null
+          ? double.tryParse(allSiteModel!.longitude!)
+          : null;
+
+      if (!hasValidSiteCoordinates(siteLat, siteLng)) {
+        LoaderWidget.hideLoader();
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(siteNotInRadiusMessage, context);
+        return;
+      }
+
       // Check distance from current location to site location
-      // Use allSiteModel if available (has latitude/longitude), otherwise skip distance check
-      if (allSiteModel != null &&
-          allSiteModel.latitude != null &&
-          allSiteModel.longitude != null) {
-        try {
-          // Parse latitude and longitude from string to double
-          final siteLat = double.tryParse(allSiteModel.latitude!);
-          final siteLng = double.tryParse(allSiteModel.longitude!);
-
-          if (siteLat != null && siteLng != null) {
-            // Check location permission first
-            LocationPermission permission = await Geolocator.checkPermission();
-            if (permission == LocationPermission.denied) {
-              permission = await Geolocator.requestPermission();
-              if (!mounted) return;
-              if (permission == LocationPermission.denied) {
-                LoaderWidget.hideLoader();
-                Toastbar.showErrorToastbar(
-                  "Location permission is required to access this site.",
-                  context,
-                );
-                return;
-              }
-            }
-            
-            if (permission == LocationPermission.deniedForever) {
-              if (!mounted) return;
-              LoaderWidget.hideLoader();
-              final shouldOpenSettings = await showDialog<bool>(
-                context: context,
-                builder: (BuildContext context) {
-                  return AlertDialog(
-                    title: const Text('Location Permission Denied'),
-                    content: const Text(
-                      'Location permission is permanently denied. '
-                      'Please enable location permission in app settings to access this site.',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(false),
-                        child: const Text('Cancel'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(true),
-                        child: const Text('Open Settings'),
-                      ),
-                    ],
-                  );
-                },
-              );
-              
-              if (shouldOpenSettings == true) {
-                await openAppSettings();
-              }
-              return;
-            }
-            
-            // Get current location
-            // Note: If location services (GPS) are disabled, calling getCurrentLocation()
-            // will trigger Android's system dialog asking to enable location.
-            // The user can tap "TURN ON" in the system dialog to enable location directly.
-            // This is the standard Android behavior, same as Google Maps.
-            final currentLocation = await LocationService.getCurrentLocation();
-            if (!mounted) return;
-
-            // Calculate distance in kilometers
-            final distanceInKm = calculateDistance(
-              currentLocation.latitude,
-              currentLocation.longitude,
-              siteLat,
-              siteLng,
-            );
-
-            // Check if distance is more than the allowed distance (in meters, converted to km)
-            final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation); // Convert meters to km
-            if (distanceInKm > maxDistanceKm) {
-              // Hide loader before showing toast
-              LoaderWidget.hideLoader();
-              if (!mounted) return;
-              Toastbar.showErrorToastbar(
-              "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",
+      try {
+        // Check location permission first
+        LocationPermission permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+          if (!mounted) return;
+          if (permission == LocationPermission.denied) {
+            LoaderWidget.hideLoader();
+            Toastbar.showErrorToastbar(
+              "Location permission is required to access this site.",
               context,
             );
-              // Prevent site from opening if distance exceeds the allowed radius
-              return;
-            }
+            return;
           }
-        } catch (e) {
-          // If location fetch fails, hide loader and show error
-          LoaderWidget.hideLoader();
-          Logger.errorLog('Error calculating distance: $e');
+        }
+
+        if (permission == LocationPermission.deniedForever) {
           if (!mounted) return;
-          Toastbar.showErrorToastbar(
-            "Unable to get your location. Please ensure location services are enabled.",
-            context,
+          LoaderWidget.hideLoader();
+          final shouldOpenSettings = await showDialog<bool>(
+            context: context,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Location Permission Denied'),
+                content: const Text(
+                  'Location permission is permanently denied. '
+                  'Please enable location permission in app settings to access this site.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Open Settings'),
+                  ),
+                ],
+              );
+            },
           );
+
+          if (shouldOpenSettings == true) {
+            await openAppSettings();
+          }
           return;
         }
+
+        // Get current location
+        // Note: If location services (GPS) are disabled, calling getCurrentLocation()
+        // will trigger Android's system dialog asking to enable location.
+        // The user can tap "TURN ON" in the system dialog to enable location directly.
+        // This is the standard Android behavior, same as Google Maps.
+        final currentLocation = await LocationService.getCurrentLocation();
+        if (!mounted) return;
+
+        // Calculate distance in kilometers
+        final distanceInKm = calculateDistance(
+          currentLocation.latitude,
+          currentLocation.longitude,
+          siteLat!,
+          siteLng!,
+        );
+
+        // Check if distance is more than the allowed distance (in meters, converted to km)
+        final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation);
+        if (distanceInKm > maxDistanceKm) {
+          // Hide loader before showing toast
+          LoaderWidget.hideLoader();
+          if (!mounted) return;
+          Toastbar.showErrorToastbar(
+            "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",
+            context,
+          );
+          // Prevent site from opening if distance exceeds the allowed radius
+          return;
+        }
+      } catch (e) {
+        // If location fetch fails, hide loader and show error
+        LoaderWidget.hideLoader();
+        Logger.errorLog('Error calculating distance: $e');
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(
+          "Unable to get your location. Please ensure location services are enabled.",
+          context,
+        );
+        return;
       }
 
       // Hide loader before navigation

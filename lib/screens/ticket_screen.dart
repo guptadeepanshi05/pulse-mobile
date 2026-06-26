@@ -351,99 +351,104 @@ class _TicketScreenState extends State<TicketScreen>
       // Show loader immediately when ticket is clicked
       LoaderWidget.showLoader(context);
 
+      if (!hasValidSiteCoordinates(ticket.latitude, ticket.longitude)) {
+        LoaderWidget.hideLoader();
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(siteNotInRadiusMessage, context);
+        return;
+      }
+
       // Check distance from current location to ticket location
-      if (ticket.latitude != null && ticket.longitude != null) {
-        try {
-          // Check location permission first
-          LocationPermission permission = await Geolocator.checkPermission();
-          if (permission == LocationPermission.denied) {
-            permission = await Geolocator.requestPermission();
-            if (!mounted) return;
-            if (permission == LocationPermission.denied) {
-              LoaderWidget.hideLoader();
-              Toastbar.showErrorToastbar(
-                "Location permission is required to access this ticket.",
-                context,
-              );
-              return;
-            }
-          }
-          
-          if (permission == LocationPermission.deniedForever) {
-            if (!mounted) return;
-            LoaderWidget.hideLoader();
-            final shouldOpenSettings = await showDialog<bool>(
-              context: context,
-              builder: (BuildContext context) {
-                return AlertDialog(
-                  title: const Text('Location Permission Denied'),
-                  content: const Text(
-                    'Location permission is permanently denied. '
-                    'Please enable location permission in app settings to access this ticket.',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      child: const Text('Cancel'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(true),
-                      child: const Text('Open Settings'),
-                    ),
-                  ],
-                );
-              },
-            );
-            
-            if (shouldOpenSettings == true) {
-              await openAppSettings();
-            }
-            return;
-          }
-          
-          // Get current location
-          // Note: If location services (GPS) are disabled, calling getCurrentLocation()
-          // will trigger Android's system dialog asking to enable location.
-          // The user can tap "TURN ON" in the system dialog to enable location directly.
-          // This is the standard Android behavior, same as Google Maps.
-          final currentLocation = await LocationService.getCurrentLocation();
+      try {
+        // Check location permission first
+        LocationPermission permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
           if (!mounted) return;
-          
-          // Calculate distance in kilometers
-          final distanceInKm = calculateDistance(
-            currentLocation.latitude,
-            currentLocation.longitude,
-            ticket.latitude!,
-            ticket.longitude!,
-          );
-
-           
-          // Check if distance is more than the allowed distance (in km)
-          final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation) ; // Convert meters to km
-          if (distanceInKm > maxDistanceKm) {
-
-         
-            // Hide loader before showing toast
+          if (permission == LocationPermission.denied) {
             LoaderWidget.hideLoader();
-            if (!mounted) return;
             Toastbar.showErrorToastbar(
-              "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",
+              "Location permission is required to access this ticket.",
               context,
             );
-            // Prevent ticket from opening if distance exceeds the allowed radius
             return;
           }
-        } catch (e) {
-          // If location fetch fails, hide loader and show error
-          LoaderWidget.hideLoader();
-          Logger.errorLog('Error calculating distance: $e');
+        }
+        
+        if (permission == LocationPermission.deniedForever) {
           if (!mounted) return;
-          Toastbar.showErrorToastbar(
-            "Unable to get your location. Please ensure location services are enabled.",
-            context,
+          LoaderWidget.hideLoader();
+          final shouldOpenSettings = await showDialog<bool>(
+            context: context,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Location Permission Denied'),
+                content: const Text(
+                  'Location permission is permanently denied. '
+                  'Please enable location permission in app settings to access this ticket.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Open Settings'),
+                  ),
+                ],
+              );
+            },
           );
+          
+          if (shouldOpenSettings == true) {
+            await openAppSettings();
+          }
           return;
         }
+        
+        // Get current location
+        // Note: If location services (GPS) are disabled, calling getCurrentLocation()
+        // will trigger Android's system dialog asking to enable location.
+        // The user can tap "TURN ON" in the system dialog to enable location directly.
+        // This is the standard Android behavior, same as Google Maps.
+        final currentLocation = await LocationService.getCurrentLocation();
+        if (!mounted) return;
+        
+        // Calculate distance in kilometers
+        final distanceInKm = calculateDistance(
+          currentLocation.latitude,
+          currentLocation.longitude,
+          ticket.latitude!,
+          ticket.longitude!,
+        );
+
+         
+        // Check if distance is more than the allowed distance (in km)
+        final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation) ; // Convert meters to km
+        if (distanceInKm > maxDistanceKm) {
+
+       
+          // Hide loader before showing toast
+          LoaderWidget.hideLoader();
+          if (!mounted) return;
+          Toastbar.showErrorToastbar(
+            "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",
+            context,
+          );
+          // Prevent ticket from opening if distance exceeds the allowed radius
+          return;
+        }
+      } catch (e) {
+        // If location fetch fails, hide loader and show error
+        LoaderWidget.hideLoader();
+        Logger.errorLog('Error calculating distance: $e');
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(
+          "Unable to get your location. Please ensure location services are enabled.",
+          context,
+        );
+        return;
       }
       // Determine site type - check if it's solar or telecom
       final siteType = ticket.siteDomainName ?? 'Solar';

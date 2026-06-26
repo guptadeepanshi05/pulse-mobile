@@ -4,10 +4,9 @@ import 'dart:async';
 import 'package:app/utils.dart';
 import 'package:app/utils/uppercase_text_formatter.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:app/constants/app_colors.dart';
 import 'package:app/constants/constants_strings.dart';
-import 'package:app/utils/image_compression_helper.dart';
+import 'package:app/commonWidgets/custom_image_upload_field.dart';
 import 'package:app/screens/qrScannerScreen.dart';
 import 'package:app/services/image_upload_service.dart';
 import 'package:app/enum/activity_type_enum.dart';
@@ -115,6 +114,7 @@ class _CCTVFormComponentState extends State<CctvFormComponent> {
   bool _isQRCodeScanned = false;
 
   bool _isUploading = false;
+  int _photoFieldNonce = 0;
   String? qrCodeScannedTs;
   String? _uploadedImageId; // Photo ID from server
   String? _photoData; // Photo byte data or base64
@@ -225,171 +225,24 @@ class _CCTVFormComponentState extends State<CctvFormComponent> {
     return true;
   }
 
-  /// Handles photo selection
+  /// Handles photo selection (paths from [ImageUploadField] / existing item data).
   void _handlePhotoSelection(String? photoPath) {
     setState(() {
-      _selectedPhotoPath = photoPath;
-      _photoData = photoPath; // Store the photo data
+      _selectedPhotoPath =
+          (photoPath == null || photoPath.isEmpty) ? null : photoPath;
+      _photoData = _selectedPhotoPath;
       _uploadedImageId = null; // Reset photo ID since we have new photo data
-      _hasNewPhotoSelected = true; // Mark that user selected a new photo
+      _hasNewPhotoSelected = photoPath != null && photoPath.isNotEmpty;
       _showValidationErrors = false;
     });
-    // Photo selection is handled internally, no parent callback needed
   }
 
-  /// Picks image from camera (matching CustomInfoCard)
-  Future<void> _pickImage() async {
-    final picker = ImagePicker();
-    XFile? pickedFile;
-    try {
-      pickedFile = await picker.pickImage(
-        source: ImageSource.camera,
-        maxWidth: ImageCompressionHelper.pickImageMaxWidth,
-        maxHeight: ImageCompressionHelper.pickImageMaxHeight,
-        imageQuality: ImageCompressionHelper.pickImageQuality,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Camera failed to open: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    if (pickedFile == null || pickedFile.path.isEmpty) return;
-
-    final originalFile = File(pickedFile.path);
-    if (!await originalFile.exists()) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Captured image not found. Please try again.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    try {
-      await Future.delayed(const Duration(milliseconds: 120));
-      final compressedFile = await Future(
-        () => ImageCompressionHelper.compressImageTo2MB(originalFile),
-      );
-      if (!mounted) return;
-      _handlePhotoSelection((compressedFile ?? originalFile).path);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error compressing image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  /// Checks if image should be shown
-  bool _shouldShowImage() {
-    return _selectedPhotoPath != null && _selectedPhotoPath!.isNotEmpty;
-  }
-
-  /// Builds image widget (matching CustomInfoCard)
-  Widget _buildImageWidget() {
-    if (_selectedPhotoPath == null || _selectedPhotoPath!.isEmpty) {
-      return Container();
-    }
-
-    if (_selectedPhotoPath!.startsWith('data:image')) {
-      // Base64 image data
-      try {
-        final parts = _selectedPhotoPath!.split(',');
-        if (parts.length == 2 && parts[1].isNotEmpty) {
-          final base64Data = parts[1];
-          final bytes = base64Decode(base64Data);
-
-          return Image.memory(
-            bytes,
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: 150,
-            errorBuilder: (context, error, stackTrace) {
-              return _buildErrorWidget('Image display error');
-            },
-          );
-        }
-      } catch (e) {
-        return _buildErrorWidget('Image decode error');
-      }
-    } else if (int.tryParse(_selectedPhotoPath!) != null) {
-      // Photo ID - show loading indicator while fetching
-      return Container(
-        color: Colors.grey.shade100,
-        child: const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              CircularProgressIndicator(
-                strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(
-                  AppColors.primaryGreen,
-                ),
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Loading image...',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 12,
-                  fontFamily: fontFamilyMontserrat,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    } else {
-      // File path
-      return SafeImageFile(
-        file: File(_selectedPhotoPath!),
-        fit: BoxFit.cover,
-        width: double.infinity,
-        height: 150,
-        errorBuilder: (context, error, stackTrace) {
-          return _buildErrorWidget('Failed to load image');
-        },
-      );
-    }
-
-    return _buildErrorWidget('Unsupported image type');
-  }
-
-  /// Builds error widget (matching CustomInfoCard)
-  Widget _buildErrorWidget(String message) {
-    return Container(
-      color: Colors.grey.shade300,
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error, color: Colors.red, size: 24),
-            const SizedBox(height: 4),
-            Text(
-              message,
-              style: const TextStyle(
-                color: Colors.red,
-                fontSize: 12,
-                fontFamily: fontFamilyMontserrat,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
+  /// Preview URL/path for [ImageUploadField] (data URLs, filesystem paths; not raw numeric ids).
+  String? _externalPhotoPreviewForUploadField() {
+    final p = _selectedPhotoPath;
+    if (p == null || p.isEmpty) return null;
+    if (int.tryParse(p) != null) return null;
+    return p;
   }
 
   Widget _buildSafeMemoryImage(String base64Payload) {
@@ -664,6 +517,7 @@ class _CCTVFormComponentState extends State<CctvFormComponent> {
   /// Clears the form
   void _clearForm() {
     setState(() {
+      _photoFieldNonce++;
       widget.serialController.clear();
       _heightController.clear();
       _selectedPhotoPath = null;
@@ -684,6 +538,7 @@ class _CCTVFormComponentState extends State<CctvFormComponent> {
   void _startEditing(Map<String, dynamic> item) async {
 
     setState(() {
+      _photoFieldNonce++;
       _isEditing = true;
       _editingItem = item;
       widget.serialController.text = item['mfg_serial_no'] ?? '';
@@ -989,80 +844,22 @@ class _CCTVFormComponentState extends State<CctvFormComponent> {
     );
   }
 
-  /// Builds the photo upload field (matching CustomInfoCard design)
+  /// Photo capture via shared [ImageUploadField] (CustomCameraScreen + compression).
   Widget _buildPhotoUploadField() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Label with asterisk (matching CustomInfoCard)
-        RichText(
-          text: TextSpan(
-            children: [
-              TextSpan(
-                text: widget.photoLabel,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w400,
-                  fontFamily: fontFamilyMontserrat,
-                  fontSize: 16,
-                  color: AppColors.white,
-                ),
-              ),
-              const TextSpan(
-                text: " *",
-                style: TextStyle(
-                  fontWeight: FontWeight.w400,
-                  fontFamily: fontFamilyMontserrat,
-                  fontSize: 16,
-                  color: AppColors.errorColor,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 6),
-
-        // Photo picker container (matching CustomInfoCard)
-        GestureDetector(
-          onTap: _pickImage,
-          child: Container(
-            width: double.infinity,
-            height: 150,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(5),
-              border: Border.all(color: Colors.grey.shade400),
-            ),
-            child: _shouldShowImage()
-                ? Stack(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(5),
-                        child: _buildImageWidget(),
-                      ),
-                    ],
-                  )
-                : Center(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.camera_alt_outlined,
-                          size: 20,
-                          color: AppColors.color555555,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          widget.photoLabel,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w400,
-                            color: AppColors.color555555,
-                            fontFamily: fontFamilyMontserrat,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-          ),
+        ImageUploadField(
+          key: ValueKey('${widget.componentId}_$_photoFieldNonce'),
+          label: widget.photoLabel,
+          placeholder: widget.photoLabel,
+          isRequired: true,
+          isDisabled: _isUploading,
+          externalImageUrl: _externalPhotoPreviewForUploadField(),
+          onImageSelected: (File? file) {
+            if (_isUploading) return;
+            _handlePhotoSelection(file?.path);
+          },
         ),
 
         // Validation error

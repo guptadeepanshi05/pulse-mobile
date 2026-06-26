@@ -1,4 +1,5 @@
 import 'package:app/app_config.dart';
+import 'package:app/commonWidgets/loader_widget.dart';
 import 'package:app/commonWidgets/pmis_header.dart';
 import 'package:app/commonWidgets/pmis_site_card.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
@@ -9,6 +10,7 @@ import 'package:app/models/pmis_project_model.dart';
 import 'package:app/models/pmis_project_site_model.dart';
 import 'package:app/screens/pmis/pmis_module.dart';
 import 'package:app/services/location_service.dart';
+import 'package:app/utils/site_radius_guard.dart';
 import 'package:flutter/material.dart';
 
 class PmisSiteScreen extends StatefulWidget {
@@ -214,18 +216,33 @@ class _PmisSiteScreenState extends State<PmisSiteScreen> {
         return PmisSiteCard(
           site: site,
           onTap: () async {
-            await Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (context) => PmisModuleScreen(
-                  project: widget.project,
-                  projectId: widget.projectId,
-                  stateName: widget.stateName,
-                  site: site,
+            LoaderWidget.showLoader(context);
+            try {
+              final allowed = await ensureUserWithinSiteRadius(
+                context,
+                siteLat: site.latitude,
+                siteLng: site.longitude,
+              );
+              LoaderWidget.hideLoader();
+              if (!mounted || !allowed) return;
+
+              await Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => PmisModuleScreen(
+                    project: widget.project,
+                    projectId: widget.projectId,
+                    stateName: widget.stateName,
+                    site: site,
+                  ),
                 ),
-              ),
-            );
-            if (!mounted) return;
-            await _loadSites();
+              );
+              if (!mounted) return;
+              await _loadSites();
+            } catch (e) {
+              if (LoaderWidget.isShowing) {
+                LoaderWidget.hideLoader();
+              }
+            }
           },
           onDirectionTap: () {
             if (site.latitude != null && site.longitude != null) {

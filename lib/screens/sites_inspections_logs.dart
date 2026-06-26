@@ -1,14 +1,20 @@
 import 'package:app/commonWidgets/loader_widget.dart';
 import 'package:app/commonWidgets/site_card.dart';
+import 'package:app/constants/api_codes.dart';
 import 'package:app/constants/constants_methods.dart';
 import 'package:app/constants/constants_strings.dart';
 import 'package:app/enum/corrective_maintenance_screen_mode_enum.dart';
 import 'package:app/models/all_site_model.dart';
 import 'package:app/screens/general_inspection/ginspection_detail.dart';
 import 'package:app/screens/site_visit/site_visit.dart';
+import 'package:app/services/location_service.dart';
 import 'package:app/services/service_locator.dart';
+import 'package:app/utils/calculate_distance.dart';
+import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../constants/app_colors.dart';
 import '../constants/app_images.dart';
@@ -165,24 +171,129 @@ class _SitesInspectionsLogsScreenState extends State<SitesInspectionsLogsScreen>
     }
   }
 
-  void _navigateToSite(AllSiteModel site) {
-    // Navigate to appropriate screen based on activity type
+  Future<void> _navigateToSite(AllSiteModel site) async {
+    if (!mounted) return;
     final parentContext = context;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => widget.activityType == 'Site Access'
-            ? SiteVisitScreen(
-                siteData: site,
-                parentContext: parentContext,
-              )
-            : GInspectionDetailScreen(
-                siteData: site,
-                mode: CMScreenModeEnum.edit,
-                parentContext: parentContext,
-              ),
-      ),
-    );
+
+    try {
+      LoaderWidget.showLoader(context);
+
+      final siteLat = site.latitude != null
+          ? double.tryParse(site.latitude!)
+          : null;
+      final siteLng = site.longitude != null
+          ? double.tryParse(site.longitude!)
+          : null;
+
+      if (!hasValidSiteCoordinates(siteLat, siteLng)) {
+        LoaderWidget.hideLoader();
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(siteNotInRadiusMessage, context);
+        return;
+      }
+
+      try {
+        LocationPermission permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+          if (!mounted) return;
+          if (permission == LocationPermission.denied) {
+            LoaderWidget.hideLoader();
+            Toastbar.showErrorToastbar(
+              "Location permission is required to access this site.",
+              context,
+            );
+            return;
+          }
+        }
+
+        if (permission == LocationPermission.deniedForever) {
+          if (!mounted) return;
+          LoaderWidget.hideLoader();
+          final shouldOpenSettings = await showDialog<bool>(
+            context: context,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Location Permission Denied'),
+                content: const Text(
+                  'Location permission is permanently denied. '
+                  'Please enable location permission in app settings to access this site.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Open Settings'),
+                  ),
+                ],
+              );
+            },
+          );
+
+          if (shouldOpenSettings == true) {
+            await openAppSettings();
+          }
+          return;
+        }
+
+        final currentLocation = await LocationService.getCurrentLocation();
+        if (!mounted) return;
+
+        final distanceInKm = calculateDistance(
+          currentLocation.latitude,
+          currentLocation.longitude,
+          siteLat!,
+          siteLng!,
+        );
+
+        final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation);
+        if (distanceInKm > maxDistanceKm) {
+          LoaderWidget.hideLoader();
+          if (!mounted) return;
+          Toastbar.showErrorToastbar(
+            "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",
+            context,
+          );
+          return;
+        }
+      } catch (e) {
+        LoaderWidget.hideLoader();
+        Logger.errorLog('Error calculating distance: $e');
+        if (!mounted) return;
+        Toastbar.showErrorToastbar(
+          "Unable to get your location. Please ensure location services are enabled.",
+          context,
+        );
+        return;
+      }
+
+      LoaderWidget.hideLoader();
+      if (!mounted) return;
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => widget.activityType == 'Site Access'
+              ? SiteVisitScreen(
+                  siteData: site,
+                  parentContext: parentContext,
+                )
+              : GInspectionDetailScreen(
+                  siteData: site,
+                  mode: CMScreenModeEnum.edit,
+                  parentContext: parentContext,
+                ),
+        ),
+      );
+    } catch (e) {
+      if (LoaderWidget.isShowing) {
+        LoaderWidget.hideLoader();
+      }
+      Logger.errorLog('Error in _navigateToSite: $e');
+    }
   }
 
   @override

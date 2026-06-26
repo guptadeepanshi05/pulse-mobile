@@ -10,6 +10,7 @@ import 'package:app/models/pmis_project_activity_model.dart';
 import 'package:app/screens/pmis/activity_ticket/activity_ticket_checker_list.dart';
 import 'package:app/services/location_service.dart';
 import 'package:app/services/pmis_activity_ticket_offline_service.dart';
+import 'package:app/utils/site_radius_guard.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:flutter/material.dart';
 
@@ -304,6 +305,13 @@ class _ProjectActivitiesScreenState extends State<ProjectActivitiesScreen> {
 
     LoaderWidget.showLoader(context);
     try {
+      final allowed = await ensureUserWithinSiteRadius(
+        context,
+        siteLat: a.latitude,
+        siteLng: a.longitude,
+      );
+      if (!mounted || !allowed) return;
+
       final config = AppConfig.of(context);
       final res = await config.pmisActivityTicketRepository
           .getActivityTicketWithDocumentWarmup(
