@@ -747,24 +747,15 @@ class _PulseDashboardState extends State<PulseDashboard> {
       // Get pending requests
       final pendingRequestsService = ServiceLocator().pendingRequestService;
       final pendingRequests = await pendingRequestsService.getPendingRequests();
+
+
       if (!mounted) return;
 
       Logger.infoLog(
         'PulseDashboard: Found ${pendingRequests.length} pending requests',
       );
 
-      // Log each pending request so we can verify offline storage is saving
-      // every PM page (Tower/Battery/.../CT), not just the last one.
-      // NOTE: must use Logger.infoLog, not print() — bare print() is rate-limited
-      // by Flutter (debugPrintThrottled) and silently dropped under load.
-      for (int i = 0; i < pendingRequests.length; i++) {
-        final r = pendingRequests[i];
-        final dataStr = r['request_data']?.toString() ?? '';
-        Logger.infoLog(
-          '📋 Pending request in database[$i] id=${r['request_id']} url=${r['url']} '
-          'dataLen=${dataStr.length} created=${r['created_at']}',
-        );
-      }
+     
 
       if (pendingRequests.isEmpty) {
         Logger.infoLog('PulseDashboard: No pending requests found');

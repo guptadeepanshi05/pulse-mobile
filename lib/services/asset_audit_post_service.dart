@@ -14,13 +14,16 @@ import 'package:app/utils/toastbar.dart';
 import 'package:dio/dio.dart';
 import 'package:intl/intl.dart';
 
-/// Service for posting asset audit data with photo ID replacement
-/// This service handles replacing local unique_id photo IDs with server_id
-/// and adding photo_taken_ts using the images table's created_at timestamp
+
 class AssetAuditPostService {
-  /// Post asset audit data with photo ID replacement
-  /// This method replaces all photo_id values with server_id from images table
-  /// and adds photo_taken_ts using the images table's created_at timestamp
+  
+   static const Set<ActivityTypeEnum> _excludedStatusTypes = {
+    ActivityTypeEnum.siteVisit,
+    ActivityTypeEnum.generalInspection,
+    ActivityTypeEnum.generalInspectionSelf,
+    ActivityTypeEnum.generalInspChecklist,
+  };
+
   Future<void> postAssetAuditDataWithPhotoReplacement({
     required List<dynamic> requests,
     required ActivityTypeEnum activityType,
@@ -171,15 +174,11 @@ class AssetAuditPostService {
         return;
     }
 
-    if (activityType == ActivityTypeEnum.siteVisit ||
-        activityType == ActivityTypeEnum.generalInspection ||
-        activityType == ActivityTypeEnum.generalInspectionSelf ||
-        activityType == ActivityTypeEnum.generalInspChecklist) {
-      // These endpoints don't need the status parameter
-      // URL is already set in the switch statement
-    } else {
-      url += '?status=${isLastPage ? 'COMPLETED' : 'IN-PROGRESS'}';
-    }
+   
+
+if (!_excludedStatusTypes.contains(activityType)) {
+  url += '?status=${isLastPage ? 'COMPLETED' : 'IN-PROGRESS'}';
+}
     if (isConnected) {
       try {
         await _postDataToApi(url, requests);
@@ -413,7 +412,12 @@ class AssetAuditPostService {
         return;
       } else {
         await _processRequestsForImages(copiedRequests);
+
+
+
         await _postDataToApi(url, copiedRequests);
+
+ 
         await ServiceLocator().pendingRequestService.deleteRequest(requestId);
       }
     } catch (e) {
@@ -552,6 +556,7 @@ class AssetAuditPostService {
 
       if (response.isSuccess && response.data != null) {
         Logger.infoLog("Incident ticket synced successfully: ${response.data}");
+        Logger.infoLog("Incident ticket synced successfully: ${response.data}");
         Toastbar.showSuccessToastWithoutContext(
           "Incident ticket synced successfully",
         );
@@ -671,6 +676,7 @@ class AssetAuditPostService {
       );
 
       if (response.isSuccess && response.data != null) {
+        Logger.infoLog("Asset upload synced successfully: ${response.data}");
         Logger.infoLog("Asset upload synced successfully: ${response.data}");
         Toastbar.showSuccessToastWithoutContext(
           "Asset upload synced successfully",
@@ -1677,6 +1683,7 @@ class AssetAuditPostService {
 
       return request;
     }
+    Logger.infoLog("processAssetAuditRequest COMPLETED - returning: $request");
     Logger.infoLog("processAssetAuditRequest COMPLETED - returning: $request");
 
     return request;
