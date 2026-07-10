@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:app/enum/activity_type_enum.dart';
 import 'package:app/models/sqlite/image_model.dart';
+import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/services/service_locator.dart';
 import 'package:app/utils/connectivity_helper.dart';
 import 'package:sqflite/sqflite.dart';
@@ -23,6 +24,23 @@ class ImageUploadService {
   final ApiService _apiService;
   final Uuid _uuid = const Uuid();
   static const String _imagesDirName = 'app_data/images';
+
+  /// AA/PM tickets in offline session must keep images local until sync.
+  Future<bool> _shouldKeepImageLocalForOfflineTicket(
+    String? siteSchId,
+    ActivityTypeEnum activityType,
+  ) async {
+    // During FIFO offline sync, images must upload before the queued API POST.
+    if (AssetAuditPostService.isSyncInProgress) return false;
+    if (siteSchId == null || siteSchId.trim().isEmpty) return false;
+    if (activityType != ActivityTypeEnum.assetAudit &&
+        activityType != ActivityTypeEnum.preventiveMaintenance) {
+      return false;
+    }
+    return ServiceLocator().assetAuditPostService.isTicketInOfflineSession(
+      siteSchId.trim(),
+    );
+  }
 
   ImageUploadService({required ApiService apiService})
     : _apiService = apiService;
@@ -200,6 +218,13 @@ class ImageUploadService {
 
       Logger.debugLog('Image saved to SQLite with ID: $uniqueId');
 
+      if (await _shouldKeepImageLocalForOfflineTicket(siteSchId, activityType)) {
+        Logger.infoLog(
+          'Image kept as LOCAL_IMAGE_ID — ticket $siteSchId is in offline session',
+        );
+        return uniqueId;
+      }
+
       // Try to upload to server
       String finalId = uniqueId; // Default to local ID
       try {
@@ -256,6 +281,13 @@ class ImageUploadService {
         createdAt: now,
         updatedAt: now,
       );
+
+      if (await _shouldKeepImageLocalForOfflineTicket(siteSchId, activityType)) {
+        Logger.infoLog(
+          'Image kept as LOCAL_IMAGE_ID — ticket $siteSchId is in offline session',
+        );
+        return uniqueId;
+      }
 
       String finalId = uniqueId;
       try {
@@ -384,6 +416,17 @@ class ImageUploadService {
       if (imageModel.imageData == null) {
         Logger.errorLog('Image data not found for unique ID: $uniqueId');
         return null;
+      }
+      if (imageModel.schId != null &&
+          imageModel.schId!.trim().isNotEmpty &&
+          await _shouldKeepImageLocalForOfflineTicket(
+            imageModel.schId,
+            imageModel.activityType,
+          )) {
+        Logger.infoLog(
+          'Skipping image server upload — ticket ${imageModel.schId} is in offline session',
+        );
+        return imageModel;
       }
       if (await ConnectivityHelper.isConnected()) {
         Logger.debugLog(
@@ -898,7 +941,8 @@ class ImageUploadService {
           );
         }
       } else {
-        if (await ConnectivityHelper.isConnected()) {
+        if (await ConnectivityHelper.isConnected() &&
+            !await _shouldKeepImageLocalForOfflineTicket(siteSchId, activityType)) {
           response = await _apiService.post<Map<String, dynamic>>(
             path: 'api/v1/mobile/uploads',
             data: {
@@ -910,7 +954,7 @@ class ImageUploadService {
           );
         } else {
           Logger.debugLog(
-            'Skipping api/v1/mobile/uploads (offline); image kept as LOCAL_IMAGE_ID',
+            'Skipping api/v1/mobile/uploads (offline or ticket offline session); image kept as LOCAL_IMAGE_ID',
           );
         }
       }
@@ -974,7 +1018,8 @@ class ImageUploadService {
           );
         }
       } else {
-        if (await ConnectivityHelper.isConnected()) {
+        if (await ConnectivityHelper.isConnected() &&
+            !await _shouldKeepImageLocalForOfflineTicket(siteSchId, activityType)) {
           response = await _apiService.post<Map<String, dynamic>>(
             path: 'api/v1/mobile/uploads',
             data: {
@@ -986,7 +1031,7 @@ class ImageUploadService {
           );
         } else {
           Logger.debugLog(
-            'Skipping api/v1/mobile/uploads (offline); image kept as LOCAL_IMAGE_ID',
+            'Skipping api/v1/mobile/uploads (offline or ticket offline session); image kept as LOCAL_IMAGE_ID',
           );
         }
       }

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:app/bloc/dashboard_cubit.dart';
 import 'package:app/commonWidgets/loader_widget.dart';
 import 'package:app/constants/constants_methods.dart';
@@ -7,8 +6,6 @@ import 'package:app/models/screen_permission.dart';
 import 'package:app/screens/corrective_maintainece/cm_all_sites.dart';
 import 'package:app/screens/ticket_screen.dart';
 import 'package:app/services/service_locator.dart';
-import 'package:app/services/asset_audit_post_service.dart';
-import 'package:app/utils/logger.dart';
 import 'package:app/utils/toastbar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -16,6 +13,7 @@ import '../commonWidgets/custom_ticket_status_card.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_images.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
+import 'package:app/commonWidgets/offline_sync_fab.dart';
 
 class HomeScreen extends StatefulWidget {
   final String? selectedActivity;
@@ -53,67 +51,35 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Syncs offline data by checking pending requests and posting them to the server
+  /// Syncs offline data using strict FIFO queue (ticket_id, sequence_no).
   Future<void> _syncOfflineData() async {
-    // Refuse to start a second sweep while one is already running so the same
-    // pending_requests row isn't POSTed twice (which the server records as
-    // duplicate `pclsri_id` / `pclsrd_id` entries).
-    if (!AssetAuditPostService.beginSyncSweep()) {
-      Logger.infoLog('HomeScreen: Sync already in progress, ignoring tap');
-      if (mounted) {
-        Toastbar.showInfoToastbar('Sync already in progress', context);
-      }
+    final result = await ServiceLocator().assetAuditPostService
+        .syncAllPendingRequestsFifo();
+
+    if (!mounted) return;
+
+    if (result.alreadyRunning) {
+      Toastbar.showInfoToastbar('Sync already in progress', context);
       return;
     }
-    try {
-      Logger.infoLog('🔄 HomeScreen: Starting offline data sync');
 
-      // Get pending requests
-      final pendingRequestsService = ServiceLocator().pendingRequestService;
-      final pendingRequests = await pendingRequestsService.getPendingRequests();
-      if (!mounted) return;
-
-      Logger.infoLog(
-        'HomeScreen: Found ${pendingRequests.length} pending requests',
-      );
-
-      if (pendingRequests.isEmpty) {
-        Logger.infoLog('HomeScreen: No pending requests found');
-        Toastbar.showInfoToastbar('No pending requests to sync', context);
-        return;
-      }
-      int successCount = 0;
-      int totalCount = pendingRequests.length;
-      // Process each pending request
-      for (final request in pendingRequests) {
-        try {
-          await ServiceLocator().assetAuditPostService
-              .syncRequestsWhenUserComesOnline(
-                request['url'],
-                jsonDecode(request['request_data']),
-                request['request_id'],
-              );
-          successCount++;
-        } catch (e) {
-          Logger.errorLog(
-            'HomeScreen: Failed to sync request ${request['request_id']}: $e',
-          );
-        }
-      }
-
-      // Show sync result
-      final message =
-          'Sync completed: $successCount successful, out of $totalCount';
-      Logger.infoLog('HomeScreen: $message');
-      if (!mounted) return;
-      Toastbar.showSuccessToastbar(message, context);
-    } catch (e) {
-      Logger.errorLog('HomeScreen: Error during sync: $e');
-      if (!mounted) return;
-      Toastbar.showErrorToastbar('Sync failed: $e', context);
-    } finally {
-      AssetAuditPostService.endSyncSweep();
+    if (result.totalCount == 0) {
+      Toastbar.showInfoToastbar('No pending requests to sync', context);
+      return;
     }
+
+    if (result.queueStopped) {
+      final message =
+          'Sync finished with errors: ${result.successCount} of ${result.totalCount} successful. '
+          'Failed at ${result.failedRequestId ?? "unknown"}: '
+          '${result.errorMessage ?? "unknown error"}';
+      Toastbar.showErrorToastbar(message, context);
+      return;
+    }
+
+    final message =
+        'Sync completed: ${result.successCount} successful, out of ${result.totalCount}';
+    Toastbar.showSuccessToastbar(message, context);
   }
 
   PreferredSizeWidget _buildCustomAppBar() {
@@ -184,15 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ],
 
-          FloatingActionButton(
-            onPressed: () {
-              _syncOfflineData();
-            },
-            backgroundColor: Colors.blue,
-            heroTag: "sync_fab",
-            child: const Icon(Icons.sync, color: Colors.white),
-            tooltip: 'Sync Offline Data',
-          ),
+          OfflineSyncFloatingActionButton(onSync: _syncOfflineData),
           const SizedBox(height: 16),
           // FloatingActionButton(
           //   onPressed: () {

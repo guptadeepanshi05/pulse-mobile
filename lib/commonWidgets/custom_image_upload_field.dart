@@ -114,6 +114,22 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
     }
   }
 
+  bool _isSelfieField() {
+    final label = widget.label?.toLowerCase() ?? '';
+    final placeholder = widget.placeholder?.toLowerCase() ?? '';
+    return label.contains('selfie') || placeholder.contains('selfie');
+  }
+
+  static const double _defaultUploadBoxHeight = 150;
+  static const double _selfieUploadBoxHeight = 220;
+
+  double get _effectiveUploadBoxHeight {
+    if (_isSelfieField() && widget.uploadBoxHeight == _defaultUploadBoxHeight) {
+      return _selfieUploadBoxHeight;
+    }
+    return widget.uploadBoxHeight;
+  }
+
   Future<File?> _applyWatermark(File file, Position? position) async {
     try {
       final bytes = await file.readAsBytes();
@@ -133,14 +149,17 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
       const lineGap = 18;
       const textTopPadding = 8;
       const boxBottomPadding = 6;
-      final desiredBoxHeight = textTopPadding + (lineGap * 3) + boxBottomPadding;
-      // Keep watermark compact so selfies remain visible.
+      final desiredBoxHeight =
+          textTopPadding + (lineGap * 3) + boxBottomPadding;
       final maxAllowedBoxHeight = (image.height * 0.24).round();
       final boxHeight = desiredBoxHeight < maxAllowedBoxHeight
           ? desiredBoxHeight
           : maxAllowedBoxHeight;
       final safeBoxHeight = boxHeight < 44 ? 44 : boxHeight;
-      final yStart = (image.height - safeBoxHeight).clamp(0, image.height - 1);
+      final yStart =
+          (image.height - safeBoxHeight).clamp(0, image.height - 1);
+
+      final textColor = img.ColorRgb8(255, 255, 255);
 
       img.fillRect(
         image,
@@ -157,7 +176,7 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
         font: font,
         x: padX,
         y: yStart + textTopPadding,
-        color: img.ColorRgb8(255, 255, 255),
+        color: textColor,
       );
       img.drawString(
         image,
@@ -165,7 +184,7 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
         font: font,
         x: padX,
         y: yStart + textTopPadding + lineGap,
-        color: img.ColorRgb8(255, 255, 255),
+        color: textColor,
       );
       img.drawString(
         image,
@@ -173,7 +192,7 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
         font: font,
         x: padX,
         y: yStart + textTopPadding + (lineGap * 2),
-        color: img.ColorRgb8(255, 255, 255),
+        color: textColor,
       );
 
       final outputPath = file.path.replaceFirst(
@@ -292,12 +311,7 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
 
   _isPickingImage = true;
 
-  final label = widget.label?.toLowerCase() ?? '';
-  final placeholder = widget.placeholder?.toLowerCase() ?? '';
-
-  /// 🔥 Detect selfie
-  final isSelfie =
-      label.contains('selfie') || placeholder.contains('selfie');
+  final isSelfie = _isSelfieField();
 
   File? pickedFile;
 
@@ -563,7 +577,7 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
               : (widget.pickFromGallery ? _pickImageFromGallery : _pickImage),
           child: Container(
             width: double.infinity,
-            height: widget.uploadBoxHeight,
+            height: _effectiveUploadBoxHeight,
             decoration: BoxDecoration(
               color: widget.isDisabled
                   ? Colors.grey.shade200

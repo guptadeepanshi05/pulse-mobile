@@ -5,7 +5,6 @@ import 'package:app/screens/pmis/project_list.dart';
 import 'package:app/screens/raise_ticket/raise_tickets.dart';
 import 'package:app/screens/ticket_screen.dart';
 import 'package:app/services/service_locator.dart';
-import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/services/local_storage_db.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -20,9 +19,9 @@ import 'package:app/screens/home_screen.dart';
 import 'package:app/screens/my_tickets.dart';
 import 'package:app/screens/notifications.dart';
 import 'package:app/services/notification_service.dart';
-import 'package:app/utils/logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
+import 'package:app/commonWidgets/offline_sync_fab.dart';
 
 class PulseDashboard extends StatefulWidget {
   const PulseDashboard({Key? key}) : super(key: key);
@@ -47,13 +46,6 @@ class _PulseDashboardState extends State<PulseDashboard> {
     _loadNotifications();
     loadVersion();
     _loadUserRoles();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Refresh notifications when the screen becomes visible
-    _loadNotifications();
   }
 
   Future<void> loadVersion() async {
@@ -126,15 +118,7 @@ class _PulseDashboardState extends State<PulseDashboard> {
         children: [
          
           const SizedBox(height: 12),
-          FloatingActionButton(
-            onPressed: () {
-              _syncOfflineData();
-            },
-            backgroundColor: Colors.blue,
-            heroTag: "sync_fab",
-            child: const Icon(Icons.sync, color: Colors.white),
-            tooltip: 'Sync Offline Data',
-          ),
+          OfflineSyncFloatingActionButton(onSync: _syncOfflineData),
         ],
       ),
       body: Stack(
@@ -728,73 +712,35 @@ class _PulseDashboardState extends State<PulseDashboard> {
     );
   }
 
-  /// Syncs offline data by checking pending requests and posting them to the server
+  /// Syncs offline data using strict FIFO queue (ticket_id, sequence_no).
   Future<void> _syncOfflineData() async {
-    // Refuse to start a second sweep while one is already running.
-    // Without this, rapid taps each fetch the same `pending_requests` rows and
-    // re-POST them before `deleteRequest` runs — that's what produces the
-    // multiplied `pclsri_id` / `pclsrd_id` records seen on the server.
-    if (!AssetAuditPostService.beginSyncSweep()) {
-      Logger.infoLog('PulseDashboard: Sync already in progress, ignoring tap');
-      if (mounted) {
-        Toastbar.showInfoToastbar('Sync already in progress', context);
-      }
+    final result = await ServiceLocator().assetAuditPostService
+        .syncAllPendingRequestsFifo();
+
+    if (!mounted) return;
+
+    if (result.alreadyRunning) {
+      Toastbar.showInfoToastbar('Sync already in progress', context);
       return;
     }
-    try {
-      Logger.infoLog('🔄 PulseDashboard: Starting offline data sync');
 
-      // Get pending requests
-      final pendingRequestsService = ServiceLocator().pendingRequestService;
-      final pendingRequests = await pendingRequestsService.getPendingRequests();
-
-
-      if (!mounted) return;
-
-      Logger.infoLog(
-        'PulseDashboard: Found ${pendingRequests.length} pending requests',
-      );
-
-     
-
-      if (pendingRequests.isEmpty) {
-        Logger.infoLog('PulseDashboard: No pending requests found');
-        Toastbar.showInfoToastbar('No pending requests to sync', context);
-        return;
-      }
-      int successCount = 0;
-      int totalCount = pendingRequests.length;
-      // Process each pending request
-      for (final request in pendingRequests) {
-        try {
-          await ServiceLocator().assetAuditPostService
-              .syncRequestsWhenUserComesOnline(
-                request['url'],
-                jsonDecode(request['request_data']),
-                request['request_id'],
-              );
-          successCount++;
-        } catch (e) {
-          Logger.errorLog(
-            'PulseDashboard: Failed to sync request ${request['request_id']} '
-            '(url=${request['url']}): $e',
-          );
-        }
-      }
-
-      // Show sync result
-      final message =
-          'Sync completed: $successCount successful, out of $totalCount';
-      Logger.infoLog('PulseDashboard: $message');
-      if (!mounted) return;
-      Toastbar.showSuccessToastbar(message, context);
-    } catch (e) {
-      Logger.errorLog('PulseDashboard: Error during sync: $e');
-      if (!mounted) return;
-      Toastbar.showErrorToastbar('Sync failed: $e', context);
-    } finally {
-      AssetAuditPostService.endSyncSweep();
+    if (result.totalCount == 0) {
+      Toastbar.showInfoToastbar('No pending requests to sync', context);
+      return;
     }
+
+    if (result.queueStopped) {
+      final message =
+          'Sync finished with errors: ${result.successCount} of ${result.totalCount} successful. '
+          'Failed at ${result.failedRequestId ?? "unknown"}: '
+          '${result.errorMessage ?? "unknown error"}';
+      Toastbar.showErrorToastbar(message, context);
+      return;
+    }
+
+    final message =
+        'Sync completed: ${result.successCount} successful, out of ${result.totalCount}';
+    Toastbar.showSuccessToastbar(message, context);
   }
 
   bool _isLogoutDialogShowing = false;

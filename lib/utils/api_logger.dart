@@ -11,6 +11,11 @@ class ApiLogger {
   static const String _responsePrefix = '📥 RESPONSE';
   static const String _errorPrefix = '❌ ERROR';
 
+  /// Full request/response JSON to the console freezes the app on large payloads
+  /// (e.g. `/api/v1/common/allSiteData` with thousands of sites). File logs
+  /// via [FileLogger] still capture bodies when needed.
+  static const bool _logBodiesToConsole = false;
+
   /// Dio [ResponseType.bytes] yields [Uint8List]; logging it via [JsonEncoder]
   /// prints one line per byte and can freeze the app on large files.
   static String? _binaryBodySummary(dynamic data) {
@@ -57,16 +62,21 @@ class ApiLogger {
     
     // Request Body
     if (options.data != null) {
-      debugPrint('📦 Request Body:');
-      _printJsonData(options.data);
+      if (_logBodiesToConsole) {
+        debugPrint('📦 Request Body:');
+        _printJsonData(options.data);
+      } else {
+        debugPrint('📦 Request Body: ${_bodySummary(options.data)}');
+      }
     }
     
-    // Generate and print curl command
-    final curlCommand = _generateCurlCommand(options);
-    debugPrint('🌐 CURL Command:');
-    debugPrint('```bash');
-    debugPrint(curlCommand);
-    debugPrint('```');
+    if (_logBodiesToConsole) {
+      final curlCommand = _generateCurlCommand(options);
+      debugPrint('🌐 CURL Command:');
+      debugPrint('```bash');
+      debugPrint(curlCommand);
+      debugPrint('```');
+    }
     
     debugPrint('${'=' * 80}\n');
     
@@ -90,8 +100,12 @@ class ApiLogger {
     
     // Response Body
     if (response.data != null) {
-      debugPrint('📦 Response Body:');
-      _printJsonData(response.data);
+      if (_logBodiesToConsole) {
+        debugPrint('📦 Response Body:');
+        _printJsonData(response.data);
+      } else {
+        debugPrint('📦 Response Body: ${_bodySummary(response.data)}');
+      }
     }
     
     debugPrint('${'=' * 80}\n');
@@ -110,8 +124,14 @@ class ApiLogger {
     
     if (error.response != null) {
       debugPrint('📥 Error Response Status: ${error.response?.statusCode}');
-      debugPrint('📥 Error Response Data:');
-      _printJsonData(error.response?.data);
+      if (_logBodiesToConsole) {
+        debugPrint('📥 Error Response Data:');
+        _printJsonData(error.response?.data);
+      } else if (error.response?.data != null) {
+        debugPrint(
+          '📥 Error Response Data: ${_bodySummary(error.response!.data)}',
+        );
+      }
     }
     
     debugPrint('${'=' * 80}\n');
@@ -120,6 +140,18 @@ class ApiLogger {
     _logErrorToFile(error);
   }
   
+  static String _bodySummary(dynamic data) {
+    final binary = _binaryBodySummary(data);
+    if (binary != null) return binary;
+    if (data is List) return '<list: ${data.length} items>';
+    if (data is Map) return '<map: ${data.length} keys>';
+    if (data is String) {
+      return data.length > 120 ? '${data.substring(0, 120)}…' : data;
+    }
+    final text = data.toString();
+    return text.length > 120 ? '${text.substring(0, 120)}…' : text;
+  }
+
   static void _printJsonData(dynamic data) {
     try {
       final binary = _binaryBodySummary(data);

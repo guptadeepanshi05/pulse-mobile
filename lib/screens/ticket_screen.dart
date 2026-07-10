@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:app/commonWidgets/loader_widget.dart';
 import 'package:app/constants/api_codes.dart';
 import 'package:app/constants/constants_methods.dart';
@@ -14,7 +13,6 @@ import 'package:app/screens/incident_ticket/incident_detail_screen.dart';
 import 'package:app/screens/site_visit/all_sites.dart';
 import 'package:app/screens/site_visit/site_visit.dart';
 import 'package:app/services/service_locator.dart';
-import 'package:app/services/asset_audit_post_service.dart';
 import 'package:app/utils/asset_audit_navigation_helper.dart';
 import 'package:app/utils/map_api_field_reader.dart';
 import 'package:app/utils/logger.dart';
@@ -39,6 +37,7 @@ import 'asset_upload/asset_upload_detail_page.dart';
 import 'energy_reading/energy_reading_screen.dart';
 import 'preventive_maintainance/pm_page_render.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
+import 'package:app/commonWidgets/offline_sync_fab.dart';
 
 class TicketScreen extends StatefulWidget {
   final String auditName;
@@ -1782,13 +1781,7 @@ class _TicketScreenState extends State<TicketScreen>
         ));
         children.add(const SizedBox(height: 16));
       }
-      children.add(FloatingActionButton(
-        onPressed: _syncOfflineData,
-        backgroundColor: Colors.blue,
-        heroTag: "sync_fab",
-        tooltip: 'Sync Offline Data',
-        child: const Icon(Icons.sync, color: Colors.white),
-      ));
+      children.add(OfflineSyncFloatingActionButton(onSync: _syncOfflineData));
     }
 
     // Back-to-top FAB: appears once user has scrolled past
@@ -1828,66 +1821,34 @@ class _TicketScreenState extends State<TicketScreen>
     );
   }
 
-  /// Syncs offline data by checking pending requests and posting them to the server
+  /// Syncs offline data using strict FIFO queue (ticket_id, sequence_no).
   Future<void> _syncOfflineData() async {
-    // Refuse to start a second sweep while one is already running so the same
-    // pending_requests row isn't POSTed twice (which the server records as
-    // duplicate `pclsri_id` / `pclsrd_id` entries).
-    if (!AssetAuditPostService.beginSyncSweep()) {
-      Logger.infoLog('TicketScreen: Sync already in progress, ignoring tap');
-      if (mounted) {
-        Toastbar.showInfoToastbar('Sync already in progress', context);
-      }
+    final result = await ServiceLocator().assetAuditPostService
+        .syncAllPendingRequestsFifo();
+
+    if (!mounted) return;
+
+    if (result.alreadyRunning) {
+      Toastbar.showInfoToastbar('Sync already in progress', context);
       return;
     }
-    try {
-      Logger.infoLog('🔄 TicketScreen: Starting offline data sync');
 
-      // Get pending requests
-      final pendingRequestsService = ServiceLocator().pendingRequestService;
-      final pendingRequests = await pendingRequestsService.getPendingRequests();
-      if (!mounted) return;
-
-      Logger.infoLog(
-        'TicketScreen: Found ${pendingRequests.length} pending requests',
-      );
-
-      if (pendingRequests.isEmpty) {
-        Logger.infoLog('TicketScreen: No pending requests found');
-        Toastbar.showInfoToastbar('No pending requests to sync', context);
-        return;
-      }
-      int successCount = 0;
-      int totalCount = pendingRequests.length;
-      // Process each pending request
-      for (final request in pendingRequests) {
-        try {
-          await ServiceLocator().assetAuditPostService
-              .syncRequestsWhenUserComesOnline(
-                request['url'],
-                jsonDecode(request['request_data']),
-                request['request_id'],
-              );
-          successCount++;
-        } catch (e) {
-          Logger.errorLog(
-            'TicketScreen: Failed to sync request ${request['request_id']}: $e',
-          );
-        }
-      }
-
-      // Show sync result
-      final message =
-          'Sync completed: $successCount successful, out of $totalCount';
-      Logger.infoLog('TicketScreen: $message');
-      if (!mounted) return;
-      Toastbar.showSuccessToastbar(message, context);
-    } catch (e) {
-      Logger.errorLog('TicketScreen: Error during sync: $e');
-      if (!mounted) return;
-      Toastbar.showErrorToastbar('Sync failed: $e', context);
-    } finally {
-      AssetAuditPostService.endSyncSweep();
+    if (result.totalCount == 0) {
+      Toastbar.showInfoToastbar('No pending requests to sync', context);
+      return;
     }
+
+    if (result.queueStopped) {
+      final message =
+          'Sync finished with errors: ${result.successCount} of ${result.totalCount} successful. '
+          'Failed at ${result.failedRequestId ?? "unknown"}: '
+          '${result.errorMessage ?? "unknown error"}';
+      Toastbar.showErrorToastbar(message, context);
+      return;
+    }
+
+    final message =
+        'Sync completed: ${result.successCount} successful, out of ${result.totalCount}';
+    Toastbar.showSuccessToastbar(message, context);
   }
 }

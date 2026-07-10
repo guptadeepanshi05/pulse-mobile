@@ -11,9 +11,31 @@ import 'package:app/utils/logger.dart';
 import 'package:app/utils/data_transformation_helper.dart';
 import 'package:app/utils/connectivity_helper.dart';
 import 'package:app/utils/toastbar.dart';
+import 'package:app/services/pending_requests_service.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 
+/// Result of a FIFO offline sync sweep.
+class SyncFifoResult {
+  final bool alreadyRunning;
+  final bool queueStopped;
+  final int successCount;
+  final int totalCount;
+  final String? failedRequestId;
+  final String? errorMessage;
+
+  const SyncFifoResult({
+    this.alreadyRunning = false,
+    this.queueStopped = false,
+    this.successCount = 0,
+    this.totalCount = 0,
+    this.failedRequestId,
+    this.errorMessage,
+  });
+
+  bool get isComplete => !alreadyRunning && !queueStopped && errorMessage == null;
+}
 
 class AssetAuditPostService {
   
@@ -23,6 +45,108 @@ class AssetAuditPostService {
     ActivityTypeEnum.generalInspectionSelf,
     ActivityTypeEnum.generalInspChecklist,
   };
+
+  /// Asset audit + PM use ticket session offline queue (FIFO per ticket).
+  static const Set<ActivityTypeEnum> _ticketSessionActivityTypes = {
+    ActivityTypeEnum.assetAudit,
+    ActivityTypeEnum.preventiveMaintenance,
+  };
+
+  /// In-memory cache of tickets in OFFLINE session mode (also persisted in SQLite).
+  static final Set<String> _offlineTicketIds = <String>{};
+
+  static bool _usesTicketSessionQueue(ActivityTypeEnum activityType) =>
+      _ticketSessionActivityTypes.contains(activityType);
+
+  static String? _extractTicketIdFromRequests(List<dynamic> requests) {
+    for (final r in requests) {
+      if (r is! Map) continue;
+      final m = Map<String, dynamic>.from(r);
+      final id = m['site_audit_sch_id'] ?? m['siteAuditSchId'];
+      if (id != null && id.toString().trim().isNotEmpty) {
+        return id.toString().trim();
+      }
+    }
+    return null;
+  }
+
+  static String _parseStatusFromUrl(String url) {
+    final match = RegExp(r'[?&]status=([^&]+)').firstMatch(url);
+    if (match == null) return 'UNKNOWN';
+    return Uri.decodeComponent(match.group(1)!).trim();
+  }
+
+  static String _syncTimestamp() =>
+      DateFormat('yyyy-MM-dd HH:mm:ss.SSS').format(DateTime.now());
+
+  void _logSyncQueue(String event, {
+    String? requestId,
+    String? ticketId,
+    int? sequence,
+    String? status,
+    String? detail,
+  }) {
+    final parts = <String>[
+      '[SYNC] $event',
+      if (requestId != null) 'requestId=$requestId',
+      if (ticketId != null) 'ticketId=$ticketId',
+      if (sequence != null) 'sequence=$sequence',
+      if (status != null) 'status=$status',
+      'ts=${_syncTimestamp()}',
+      if (detail != null) detail,
+    ];
+    Logger.infoLog(parts.join(' | '));
+  }
+
+  Future<bool> _isTicketInOfflineMode(String ticketId) async {
+    if (_offlineTicketIds.contains(ticketId)) return true;
+    final inDb = await ServiceLocator().pendingRequestService
+        .isTicketInOfflineMode(ticketId);
+    if (inDb) _offlineTicketIds.add(ticketId);
+    return inDb;
+  }
+
+  /// Public check: ticket entered offline session (any page queued offline).
+  /// Used by [ImageUploadService] to skip server uploads for AA/PM tickets.
+  Future<bool> isTicketInOfflineSession(String ticketId) async {
+    if (ticketId.trim().isEmpty) return false;
+    return _isTicketInOfflineMode(ticketId.trim());
+  }
+
+  Future<void> _markTicketOfflineMode(String ticketId) async {
+    if (ticketId.trim().isEmpty) return;
+    _offlineTicketIds.add(ticketId);
+    await ServiceLocator().pendingRequestService.markTicketOfflineMode(ticketId);
+    _logSyncQueue(
+      'TICKET OFFLINE MODE',
+      ticketId: ticketId,
+      detail: 'ticket will not call API until sync completes',
+    );
+  }
+
+  Future<void> _maybeClearTicketOfflineMode(String ticketId) async {
+    if (ticketId.trim().isEmpty) return;
+    final remaining = await ServiceLocator().pendingRequestService
+        .countPendingForTicket(ticketId);
+    if (remaining == 0) {
+      _offlineTicketIds.remove(ticketId);
+      _logSyncQueue(
+        'TICKET SYNCED',
+        ticketId: ticketId,
+        detail: 'all pending pages uploaded — ticket left offline mode',
+      );
+    }
+  }
+
+  Future<bool> _shouldForceOfflineSave(
+    ActivityTypeEnum activityType,
+    List<dynamic> requests,
+  ) async {
+    if (!_usesTicketSessionQueue(activityType)) return false;
+    final ticketId = _extractTicketIdFromRequests(requests);
+    if (ticketId == null) return false;
+    return _isTicketInOfflineMode(ticketId);
+  }
 
   Future<void> postAssetAuditDataWithPhotoReplacement({
     required List<dynamic> requests,
@@ -57,25 +181,19 @@ class AssetAuditPostService {
       }
       // Check internet connectivity
       final isConnected = await ConnectivityHelper.isConnected();
-      Logger.infoLog("user is connected to internet: $isConnected");
+      final forceOfflineSave = await _shouldForceOfflineSave(
+        activityType,
+        requests,
+      );
 
       //create deep copy of requests so that actual data preserves
       List<dynamic> copiedRequests = jsonDecode(jsonEncode(requests));
-      if (isConnected) {
-        Logger.debugLog(
-          "User is connected to the internet, trying to post the data",
-        );
-
+      if (isConnected && !forceOfflineSave) {
         try {
           await _processRequestsForImages(copiedRequests);
-          Logger.debugLog("data after processing images: $copiedRequests");
         } catch (e) {
           Logger.errorLog("error in processing images: $e");
         }
-      } else {
-        Logger.debugLog(
-          "User is not connected to the internet, saving data locally",
-        );
       }
       DataTransformationHelper.updateMetadataInRequest(
         copiedRequests,
@@ -86,6 +204,7 @@ class AssetAuditPostService {
         isConnected,
         activityType,
         isLastPage,
+        forceOfflineSave: forceOfflineSave,
       );
     } catch (e) {
       Logger.errorLog(
@@ -108,6 +227,10 @@ class AssetAuditPostService {
   static final Set<String> _inFlightSyncRequestIds = <String>{};
   static bool _isSyncRunning = false;
 
+  /// Notifies listeners when an offline sync sweep starts or ends.
+  static final ValueNotifier<bool> syncInProgressNotifier =
+      ValueNotifier<bool>(false);
+
   /// Whether an offline-sync sweep is currently in progress.
   /// Callers (sync buttons) should check this and bail out instead of starting
   /// a parallel sweep, otherwise they'd POST the same pending rows again.
@@ -118,19 +241,22 @@ class AssetAuditPostService {
   static bool beginSyncSweep() {
     if (_isSyncRunning) return false;
     _isSyncRunning = true;
+    syncInProgressNotifier.value = true;
     return true;
   }
 
   static void endSyncSweep() {
     _isSyncRunning = false;
+    syncInProgressNotifier.value = false;
   }
 
   Future<void> _postRequestsIfConnectedOrSaveToSqlite(
     List<dynamic> requests,
     bool isConnected,
     ActivityTypeEnum activityType,
-    bool isLastPage,
-  ) async {
+    bool isLastPage, {
+    bool forceOfflineSave = false,
+  }) async {
     String url = '/api/v1/mobile/';
     switch (activityType) {
       case ActivityTypeEnum.assetAudit:
@@ -179,6 +305,47 @@ class AssetAuditPostService {
 if (!_excludedStatusTypes.contains(activityType)) {
   url += '?status=${isLastPage ? 'COMPLETED' : 'IN-PROGRESS'}';
 }
+
+    final usesTicketSession = _usesTicketSessionQueue(activityType);
+    final ticketId = usesTicketSession
+        ? _extractTicketIdFromRequests(requests)
+        : null;
+    final pageStatus = _parseStatusFromUrl(url);
+
+    // Ticket session mode (asset audit + PM): once offline, always queue.
+    if (usesTicketSession && ticketId != null) {
+      if (forceOfflineSave || !isConnected) {
+        if (!isConnected || forceOfflineSave) {
+          await _markTicketOfflineMode(ticketId);
+        }
+        await _saveTicketSessionPendingRequest(
+          requests: requests,
+          url: url,
+          ticketId: ticketId,
+          pageStatus: pageStatus,
+          ticketSyncMode: TicketSyncMode.offline,
+        );
+        return;
+      }
+
+      try {
+        await _postDataToApi(url, requests);
+        return;
+      } catch (e) {
+        Logger.errorLog("error in posting data: $e");
+        await _markTicketOfflineMode(ticketId);
+        await _saveTicketSessionPendingRequest(
+          requests: requests,
+          url: url,
+          ticketId: ticketId,
+          pageStatus: pageStatus,
+          ticketSyncMode: TicketSyncMode.offline,
+        );
+        return;
+      }
+    }
+
+    // Legacy flow for other activity types.
     if (isConnected) {
       try {
         await _postDataToApi(url, requests);
@@ -187,15 +354,68 @@ if (!_excludedStatusTypes.contains(activityType)) {
         Logger.errorLog("error in posting data: $e");
       }
     }
-    Logger.infoLog(
-      "User is not connected to the internet, saving data in local db",
+    await _saveLegacyPendingRequest(
+      requests: requests,
+      url: url,
     );
-    // Ensure uniqueness even when multiple offline saves land in the same ms
-    // (was causing PM IN-PROGRESS saves to be overwritten by the COMPLETED one).
+  }
+
+  Future<void> _saveTicketSessionPendingRequest({
+    required List<dynamic> requests,
+    required String url,
+    required String ticketId,
+    required String pageStatus,
+    required String ticketSyncMode,
+  }) async {
+    final sequenceNo = await ServiceLocator().pendingRequestService
+        .getNextSequenceNoForTicket(ticketId);
     final uniqueSuffix = ++_offlineRequestSeq;
     final requestId =
         'asset_audit_${DateTime.now().millisecondsSinceEpoch}_$uniqueSuffix';
-    bool isSaved = await ServiceLocator().pendingRequestService
+
+    _logSyncQueue(
+      'PAGE QUEUED',
+      requestId: requestId,
+      ticketId: ticketId,
+      sequence: sequenceNo,
+      status: pageStatus,
+      detail: 'mode=$ticketSyncMode',
+    );
+
+    final isSaved = await ServiceLocator().pendingRequestService
+        .savePendingRequest(
+          requestId: requestId,
+          url: url,
+          headers: {},
+          jsonEncodedRequestData: jsonEncode(requests),
+          ticketId: ticketId,
+          sequenceNo: sequenceNo,
+          ticketSyncMode: ticketSyncMode,
+        );
+
+    if (isSaved) {
+      if (ticketSyncMode == TicketSyncMode.offline) {
+        _offlineTicketIds.add(ticketId);
+      }
+      Toastbar.showSuccessToastWithoutContext(
+        "Data saved offline. It will sync when you tap Sync after completing the ticket.",
+      );
+    } else {
+      Logger.errorLog(
+        '❌ Failed to save pending request (requestId: $requestId, ticketId: $ticketId)',
+      );
+      throw Exception('Failed to save data to database');
+    }
+  }
+
+  Future<void> _saveLegacyPendingRequest({
+    required List<dynamic> requests,
+    required String url,
+  }) async {
+    final uniqueSuffix = ++_offlineRequestSeq;
+    final requestId =
+        'asset_audit_${DateTime.now().millisecondsSinceEpoch}_$uniqueSuffix';
+    final isSaved = await ServiceLocator().pendingRequestService
         .savePendingRequest(
           requestId: requestId,
           url: url,
@@ -203,10 +423,6 @@ if (!_excludedStatusTypes.contains(activityType)) {
           jsonEncodedRequestData: jsonEncode(requests),
         );
     if (isSaved) {
-      Logger.infoLog(
-        "Data saved to DB successfully (requestId: $requestId, url: $url)",
-      );
-
       Toastbar.showSuccessToastWithoutContext(
         "Data submission failed. Don’t worry—your data has been saved on this device and can be synced when you’re back online.",
       );
@@ -218,8 +434,155 @@ if (!_excludedStatusTypes.contains(activityType)) {
     }
   }
 
+  /// FIFO offline sync: strict order per ticket (ticket_id, sequence_no).
+  /// On failure, remaining pages for that ticket are skipped; other tickets
+  /// (AA, PM, CM, etc.) continue. Legacy rows without ticket_id are independent.
+  Future<SyncFifoResult> syncAllPendingRequestsFifo() async {
+    if (!beginSyncSweep()) {
+      _logSyncQueue('SYNC SKIPPED', detail: 'sync already running');
+      return const SyncFifoResult(alreadyRunning: true);
+    }
+
+    try {
+      final pendingService = ServiceLocator().pendingRequestService;
+      final pendingRequests = await pendingService.getPendingRequestsFifoOrdered();
+      final totalCount = pendingRequests.length;
+
+      _logSyncQueue('SYNC START', detail: 'pendingCount=$totalCount');
+
+      if (pendingRequests.isEmpty) {
+        _logSyncQueue('QUEUE COMPLETED', detail: 'no pending requests');
+        return const SyncFifoResult(totalCount: 0);
+      }
+
+      for (int i = 0; i < pendingRequests.length; i++) {
+        final row = pendingRequests[i];
+        final requestId = row['request_id']?.toString() ?? '';
+        final ticketId = row['ticket_id']?.toString() ?? '';
+        final sequence = row['sequence_no'] as int? ?? 0;
+        final status = _parseStatusFromUrl(row['url']?.toString() ?? '');
+        _logSyncQueue(
+          'QUEUE ORDER',
+          requestId: requestId,
+          ticketId: ticketId.isEmpty ? null : ticketId,
+          sequence: sequence,
+          status: status,
+          detail: 'position=${i + 1}/$totalCount',
+        );
+      }
+
+      int successCount = 0;
+      int failureCount = 0;
+      final blockedTicketIds = <String>{};
+      String? lastFailedRequestId;
+      String? lastErrorMessage;
+
+      for (final request in pendingRequests) {
+        final requestId = request['request_id']?.toString() ?? '';
+        final ticketId = request['ticket_id']?.toString() ?? '';
+        final sequence = request['sequence_no'] as int? ?? 0;
+        final status = _parseStatusFromUrl(request['url']?.toString() ?? '');
+
+        if (ticketId.isNotEmpty && blockedTicketIds.contains(ticketId)) {
+          _logSyncQueue(
+            'API SKIPPED',
+            requestId: requestId,
+            ticketId: ticketId,
+            sequence: sequence,
+            status: status,
+            detail: 'later pages skipped after failure on same ticket',
+          );
+          continue;
+        }
+
+        _logSyncQueue(
+          'API START',
+          requestId: requestId,
+          ticketId: ticketId.isEmpty ? null : ticketId,
+          sequence: sequence,
+          status: status,
+        );
+
+        try {
+          await syncRequestsWhenUserComesOnline(
+            request['url'] as String,
+            jsonDecode(request['request_data'] as String) as List<dynamic>,
+            requestId,
+          );
+          successCount++;
+          _logSyncQueue(
+            'API SUCCESS',
+            requestId: requestId,
+            ticketId: ticketId.isEmpty ? null : ticketId,
+            sequence: sequence,
+            status: status,
+          );
+          if (ticketId.isNotEmpty) {
+            await _maybeClearTicketOfflineMode(ticketId);
+          }
+        } catch (e) {
+          failureCount++;
+          lastFailedRequestId = requestId;
+          lastErrorMessage = e.toString();
+          _logSyncQueue(
+            'API FAILED',
+            requestId: requestId,
+            ticketId: ticketId.isEmpty ? null : ticketId,
+            sequence: sequence,
+            status: status,
+            detail: e.toString(),
+          );
+          if (ticketId.isNotEmpty) {
+            blockedTicketIds.add(ticketId);
+            _logSyncQueue(
+              'TICKET BLOCKED',
+              ticketId: ticketId,
+              detail: 'remaining pages for this ticket will be skipped',
+            );
+          }
+        }
+      }
+
+      if (failureCount > 0) {
+        _logSyncQueue(
+          'QUEUE COMPLETED WITH ERRORS',
+          detail:
+              'success=$successCount failures=$failureCount '
+              'blockedTickets=${blockedTicketIds.length}',
+        );
+        return SyncFifoResult(
+          queueStopped: true,
+          successCount: successCount,
+          totalCount: totalCount,
+          failedRequestId: lastFailedRequestId,
+          errorMessage: lastErrorMessage,
+        );
+      }
+
+      _logSyncQueue(
+        'QUEUE COMPLETED',
+        detail: 'success=$successCount total=$totalCount',
+      );
+      return SyncFifoResult(
+        successCount: successCount,
+        totalCount: totalCount,
+      );
+    } catch (e) {
+      Logger.errorLog('syncAllPendingRequestsFifo error: $e');
+      return SyncFifoResult(
+        queueStopped: true,
+        errorMessage: e.toString(),
+      );
+    } finally {
+      endSyncSweep();
+    }
+  }
+
   Future<void> _postDataToApi(String url, List<dynamic> requests) async {
     Logger.infoLog("User is connected to internet, posting data to API");
+
+
+
     final response;
     if (url.contains("api/v1/mobile/uploadsSelfie")) {
       response = await _uploadSelfieWithoutCache(requests);

@@ -23,22 +23,7 @@ class PendingRequestsRetryService {
 
       Logger.infoLog('🔄 PendingRequestsRetryService: Starting retry of pending requests');
 
-      // Get all pending requests
-      final pendingRequests = await _pendingRequestsService.getPendingRequests();
-      
-      if (pendingRequests.isEmpty) {
-        Logger.debugLog('📋 PendingRequestsRetryService: No pending requests to retry');
-        return;
-      }
-
-      Logger.debugLog('📋 PendingRequestsRetryService: Found ${pendingRequests.length} pending requests');
-
-      // Retry each pending request
-      for (final request in pendingRequests) {
-        await _retrySingleRequest(request);
-      }
-
-      Logger.infoLog('✅ PendingRequestsRetryService: Completed retry of all pending requests');
+      await ServiceLocator().assetAuditPostService.syncAllPendingRequestsFifo();
 
     } catch (e) {
       Logger.errorLog('❌ PendingRequestsRetryService: Error during retry process: $e');
