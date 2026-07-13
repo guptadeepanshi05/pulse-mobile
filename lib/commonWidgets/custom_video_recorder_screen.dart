@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
+import 'package:app/utils/safe_camera_disposal.dart';
+
 class CustomVideoRecorderScreen extends StatefulWidget {
   final bool useFrontCamera;
 
@@ -13,24 +15,42 @@ class CustomVideoRecorderScreen extends StatefulWidget {
       _CustomVideoRecorderScreenState();
 }
 
-class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen> {
+class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen>
+    with WidgetsBindingObserver {
   CameraController? _controller;
   bool _isInitialized = false;
   bool _isRecording = false;
   bool _isBusy = false;
+  bool _isClosing = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initCamera();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _tearDownCamera();
+    } else if (state == AppLifecycleState.resumed && mounted && !_isClosing) {
+      _initCamera();
+    }
+  }
+
   Future<void> _initCamera() async {
+    if (_isClosing) return;
+
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
         if (!mounted) return;
-        Navigator.pop(context);
+        await _close();
         return;
       }
 
@@ -48,25 +68,63 @@ class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen> {
         }
       }
 
-      _controller = CameraController(
+      final controller = CameraController(
         selected,
         ResolutionPreset.medium,
         enableAudio: true,
       );
-      await _controller!.initialize();
-      if (!mounted) return;
+      await controller.initialize();
+
+      if (!mounted || _isClosing) {
+        await safeDisposeCameraController(controller);
+        return;
+      }
+
+      _controller = controller;
       setState(() => _isInitialized = true);
     } catch (_) {
       if (!mounted) return;
-      Navigator.pop(context);
+      await _close();
+    }
+  }
+
+  Future<void> _tearDownCamera() async {
+    final controller = _controller;
+    _controller = null;
+    if (mounted) {
+      setState(() {
+        _isInitialized = false;
+        _isRecording = false;
+      });
+    }
+    await safeDisposeCameraController(controller);
+  }
+
+  Future<void> _close([File? result]) async {
+    if (_isClosing || !mounted) return;
+    _isClosing = true;
+
+    setState(() {
+      _isInitialized = false;
+      _isBusy = true;
+    });
+
+    await _tearDownCamera();
+
+    if (mounted) {
+      Navigator.pop(context, result);
     }
   }
 
   Future<void> _toggleRecording() async {
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized || _isBusy) {
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        _isBusy ||
+        _isClosing) {
       return;
     }
+
     _isBusy = true;
     try {
       if (!_isRecording) {
@@ -79,7 +137,7 @@ class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen> {
       final file = await controller.stopVideoRecording();
       if (!mounted) return;
       setState(() => _isRecording = false);
-      Navigator.pop(context, File(file.path));
+      await _close(File(file.path));
     } catch (_) {
       if (!mounted) return;
       setState(() => _isRecording = false);
@@ -90,61 +148,62 @@ class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen> {
 
   @override
   void dispose() {
-    // Capture and null out first so any rebuild during teardown can't
-    // accidentally trigger a second dispose on the same controller.
+    WidgetsBinding.instance.removeObserver(this);
+    _isClosing = true;
     final controller = _controller;
     _controller = null;
-    // CameraController.dispose() is async and, under camera_android_camerax,
-    // can throw a PlatformException (NullPointerException on Surface.release())
-    // when the Flutter engine has already released the surface texture.
-    // Swallow it — there's nothing actionable here and the resources are gone.
-    controller?.dispose().catchError((_) {});
+    safeDisposeCameraController(controller);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: _isInitialized && _controller != null
-          ? Stack(
-              children: [
-                Positioned.fill(child: CameraPreview(_controller!)),
-                Positioned(
-                  top: 40,
-                  left: 20,
-                  child: IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    onPressed: () => Navigator.pop(context),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _close();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: _isInitialized && _controller != null
+            ? Stack(
+                children: [
+                  Positioned.fill(child: CameraPreview(_controller!)),
+                  Positioned(
+                    top: 40,
+                    left: 20,
+                    child: IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: _isClosing ? null : () => _close(),
+                    ),
                   ),
-                ),
-                Positioned(
-                  bottom: 40,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: GestureDetector(
-                      onTap: _toggleRecording,
-                      child: Container(
-                        width: 74,
-                        height: 74,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _isRecording ? Colors.red : Colors.white,
-                          border: Border.all(color: Colors.grey, width: 4),
-                        ),
-                        child: Icon(
-                          _isRecording ? Icons.stop : Icons.videocam,
-                          color: _isRecording ? Colors.white : Colors.red,
-                          size: 36,
+                  Positioned(
+                    bottom: 40,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: _isBusy ? null : _toggleRecording,
+                        child: Container(
+                          width: 70,
+                          height: 70,
+                          decoration: BoxDecoration(
+                            color: _isRecording ? Colors.red : Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(width: 4, color: Colors.grey),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            )
-          : const Center(child: CircularProgressIndicator(color: Colors.white)),
+                ],
+              )
+            : const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
+      ),
     );
   }
 }
