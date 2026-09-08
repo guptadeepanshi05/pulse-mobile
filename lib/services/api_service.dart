@@ -127,11 +127,7 @@ class ApiService {
     }
   }
 
-  /// Dio's default JSON transformer calls [jsonDecode] on the response bytes.
-  /// Some PMIS endpoints return **HTTP 2xx with an empty body** (still often
-  /// advertised as JSON), which throws [FormatException] at offset 0 and
-  /// surfaces as [DioExceptionType.unknown]. POST uses [ResponseType.plain]
-  /// and decodes here instead.
+
   static dynamic _decodePostResponseBody(dynamic raw) {
     if (raw == null) return null;
     if (raw is! String) return raw;
