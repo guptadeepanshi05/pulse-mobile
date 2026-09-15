@@ -218,13 +218,9 @@ class _PmisSiteScreenState extends State<PmisSiteScreen> {
           onTap: () async {
             LoaderWidget.showLoader(context);
             try {
-              final allowed = await ensureUserWithinSiteRadius(
-                context,
-                siteLat: site.latitude,
-                siteLng: site.longitude,
-              );
+             
               LoaderWidget.hideLoader();
-              if (!mounted || !allowed) return;
+              if (!mounted ) return;
 
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(

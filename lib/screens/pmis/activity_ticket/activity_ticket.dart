@@ -1994,18 +1994,16 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     );
     final payloadJson = const JsonEncoder.withIndent('  ').convert(postPayload);
     Logger.infoLog('[AT_POST_REQUEST_START]');
-    print('[AT_POST_REQUEST_START]');
     const chunkSize = 900;
     for (int i = 0; i < payloadJson.length; i += chunkSize) {
       final end = (i + chunkSize < payloadJson.length)
           ? i + chunkSize
           : payloadJson.length;
       final chunk = payloadJson.substring(i, end);
-      print(chunk);
       Logger.infoLog(chunk);
     }
     Logger.infoLog('[AT_POST_REQUEST_END]');
-    print('[AT_POST_REQUEST_END]');
+
 
     var shouldRedirectToActivities = false;
     LoaderWidget.showLoader(context);
@@ -2030,17 +2028,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       final responseJson = const JsonEncoder.withIndent('  ')
           .convert(response.data ?? <String, dynamic>{});
       Logger.infoLog('[AT_POST_RESPONSE_START]');
-      print('[AT_POST_RESPONSE_START]');
       for (int i = 0; i < responseJson.length; i += chunkSize) {
         final end = (i + chunkSize < responseJson.length)
             ? i + chunkSize
             : responseJson.length;
         final chunk = responseJson.substring(i, end);
-        print(chunk);
         Logger.infoLog(chunk);
       }
       Logger.infoLog('[AT_POST_RESPONSE_END]');
-      print('[AT_POST_RESPONSE_END]');
 
       if (!mounted) return;
       if (response.isSuccess) {

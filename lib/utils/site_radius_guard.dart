@@ -12,6 +12,7 @@ Future<bool> ensureUserWithinSiteRadius(
   BuildContext context, {
   required double? siteLat,
   required double? siteLng,
+  
 }) async {
   if (!hasValidSiteCoordinates(siteLat, siteLng)) {
     Toastbar.showErrorToastbar(siteNotInRadiusMessage, context);

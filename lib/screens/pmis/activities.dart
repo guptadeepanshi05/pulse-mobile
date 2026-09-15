@@ -305,12 +305,15 @@ class _ProjectActivitiesScreenState extends State<ProjectActivitiesScreen> {
 
     LoaderWidget.showLoader(context);
     try {
-      final allowed = await ensureUserWithinSiteRadius(
-        context,
-        siteLat: a.latitude,
-        siteLng: a.longitude,
-      );
-      if (!mounted || !allowed) return;
+      // Geo-fenced activities require the user to be within site radius; others open freely.
+      if (a.isGeoFenced) {
+        final allowed = await ensureUserWithinSiteRadius(
+          context,
+          siteLat: a.latitude,
+          siteLng: a.longitude,
+        );
+        if (!mounted || !allowed) return;
+      }
 
       final config = AppConfig.of(context);
       final res = await config.pmisActivityTicketRepository
