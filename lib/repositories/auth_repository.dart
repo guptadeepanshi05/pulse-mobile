@@ -38,17 +38,26 @@ class AuthRepository {
 
       final appVersion = await AppVersionHelper.resolveVersionName();
 
+      final requestData = {
+        'username': username,
+        'password': password,
+        'firebaseAccessToken': tokenForApi,
+      };
+      final requestHeaders = appVersion.isNotEmpty
+          ? {'App-Version': appVersion}
+          : null;
+
+      print('LOGIN REQUEST path: authenticate/login');
+      print('LOGIN REQUEST headers: $requestHeaders');
+      print('LOGIN REQUEST data: $requestData');
+
       final response = await _apiService.post<Map<String, dynamic>>(
         path: 'authenticate/login',
-        data: {
-          'username': username,
-          'password': password,
-          'firebaseAccessToken': tokenForApi,
-        },
-        headers: appVersion.isNotEmpty
-            ? {'App-Version': appVersion}
-            : null,
+        data: requestData,
+        headers: requestHeaders,
       );
+
+   
 
       if (response.isSuccess && response.data != null) {
         final authModel = AuthModel.fromJson(response.data!);

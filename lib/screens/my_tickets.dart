@@ -1,5 +1,4 @@
 import 'package:app/commonWidgets/loader_widget.dart';
-import 'package:app/constants/api_codes.dart';
 import 'package:app/constants/constants_methods.dart';
 import 'package:app/constants/constants_strings.dart';
 import 'package:app/enum/activity_type_enum.dart';
@@ -962,10 +961,8 @@ class _MyTicketsScreenState extends State<MyTicketsScreen>
         ticket.longitude,
       );
 
-      // Check if distance is more than the allowed distance
-      // distanceFromLocation is in meters; convert to km for comparison
-      final maxDistanceKm =
-          double.parse(ApiCodes.distanceFromLocation) ;
+      // Check if distance is more than the allowed distance (km from system-settings)
+      final maxDistanceKm = resolveTicketAccessRangeKm();
       if (distanceInKm > maxDistanceKm) {
         // Hide loader before showing toast
         LoaderWidget.hideLoader();
@@ -1831,10 +1828,8 @@ class _MyTicketsScreenState extends State<MyTicketsScreen>
             siteLng ?? 0.0,
           );
 
-          // Check if distance is more than the allowed distance
-          // distanceFromLocation is in meters; convert to km for comparison
-          final maxDistanceKm =
-              double.parse(ApiCodes.distanceFromLocation) ;
+          // Check if distance is more than the allowed distance (km from system-settings)
+          final maxDistanceKm = resolveTicketAccessRangeKm();
           if (distanceInKm > maxDistanceKm) {
             // Hide loader before showing toast
             LoaderWidget.hideLoader();

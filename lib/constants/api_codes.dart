@@ -12,6 +12,7 @@ class ApiCodes {
   static const String validationFailed = "015";
   static const String recordDeleted = "016";
   static const String alreadyExist = "025";
+  /// Fallback site/ticket access radius (km) when system-settings is unavailable.
   static const String distanceFromLocationProd = "0.1";
-  static const String distanceFromLocation ="0.1";
- }
+  static const String distanceFromLocation = "0.1";
+}

@@ -1,4 +1,3 @@
-import 'package:app/constants/api_codes.dart';
 import 'package:app/services/location_service.dart';
 import 'package:app/utils/calculate_distance.dart';
 import 'package:app/utils/logger.dart';
@@ -71,7 +70,7 @@ Future<bool> ensureUserWithinSiteRadius(
       siteLng!,
     );
 
-    final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation);
+    final maxDistanceKm = resolveTicketAccessRangeKm();
     if (distanceInKm > maxDistanceKm) {
       Toastbar.showErrorToastbar(
         "You are not in the radius of site. Your distance from the site is: ${distanceInKm.toStringAsFixed(2)} km",

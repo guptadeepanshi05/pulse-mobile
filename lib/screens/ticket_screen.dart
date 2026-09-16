@@ -1,5 +1,4 @@
 import 'package:app/commonWidgets/loader_widget.dart';
-import 'package:app/constants/api_codes.dart';
 import 'package:app/constants/constants_methods.dart';
 import 'package:app/constants/constants_strings.dart';
 import 'package:app/enum/activity_type_enum.dart';
@@ -424,7 +423,7 @@ class _TicketScreenState extends State<TicketScreen>
 
          
         // Check if distance is more than the allowed distance (in km)
-        final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation) ; // Convert meters to km
+        final maxDistanceKm = resolveTicketAccessRangeKm(); // Convert meters to km
         if (distanceInKm > maxDistanceKm) {
 
        

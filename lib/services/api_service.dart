@@ -468,6 +468,48 @@ class ApiService {
     }
   }
 
+  /// Fetches dashboard system settings (e.g. TICKET_ACCESS_RANGE in km).
+  ///
+  /// Path is relative to baseUrl (`.../api/`), matching:
+  /// `GET api/v1/dashboard/system-settings`
+  Future<ResponseResult<List<Map<String, dynamic>>>> getSystemSettings({
+    Map<String, String>? headers,
+  }) async {
+    try {
+      final result = await apiProvider.getClient().get(
+            'api/v1/dashboard/system-settings',
+            options: Options(headers: headers),
+          );
+
+      if (result.statusCode == 200) {
+        final raw = result.data;
+        if (raw is List) {
+          final settings = raw
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+          return ResponseResult.success(settings, result.statusCode);
+        }
+        return ResponseResult.error(
+          errorMessage: 'Unexpected system-settings response format',
+          statusCode: result.statusCode,
+        );
+      }
+
+      return ResponseResult.error(
+        errorMessage: 'Request failed with status code: ${result.statusCode}',
+        statusCode: result.statusCode,
+      );
+    } on DioException catch (e) {
+      _recordError(e);
+      return ResponseResult.error(
+        errorMessage: DioExceptions.fromDioError(dioError: e).errorMessage(),
+        dioErrorType: e.type,
+        statusCode: e.response?.statusCode,
+      );
+    }
+  }
+
 }
 
 class ResponseResult<T> extends Equatable {

@@ -22,6 +22,7 @@ import 'package:app/services/notification_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
 import 'package:app/commonWidgets/offline_sync_fab.dart';
+import 'package:app/utils/calculate_distance.dart';
 
 class PulseDashboard extends StatefulWidget {
   const PulseDashboard({Key? key}) : super(key: key);
@@ -44,6 +45,7 @@ class _PulseDashboardState extends State<PulseDashboard> {
   void initState() {
     super.initState();
     _loadNotifications();
+    _loadSystemSettings();
     loadVersion();
     _loadUserRoles();
   }
@@ -73,6 +75,33 @@ class _PulseDashboardState extends State<PulseDashboard> {
       setState(() {
         _notificationCount = "0";
       });
+    }
+  }
+
+  /// Fetches `TICKET_ACCESS_RANGE` (km) and caches it for radius checks app-wide.
+  Future<void> _loadSystemSettings() async {
+    try {
+      final token = LocalStorageDB.getToken;
+      if (token == null || token.isEmpty) return;
+
+      final response = await ServiceLocator().apiService.getSystemSettings(
+        headers: {'Authorization': 'Bearer $token', 'accept': '*/*'},
+      );
+
+      if (!response.isSuccess || response.data == null) return;
+
+      for (final item in response.data!) {
+        final key = item['key']?.toString().trim();
+        final value = item['value']?.toString().trim();
+        if (key == ticketAccessRangeSettingKey &&
+            value != null &&
+            value.isNotEmpty) {
+          await LocalStorageDB.saveTicketAccessRangeKm(value);
+          break;
+        }
+      }
+    } catch (_) {
+      // Keep last cached / default radius if the settings call fails.
     }
   }
 

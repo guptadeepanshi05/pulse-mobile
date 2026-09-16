@@ -465,6 +465,17 @@ class LocalStorageDB {
 
   }
 
+  /// System setting `TICKET_ACCESS_RANGE` value in kilometers (e.g. `"1000"`).
+  static String? get getTicketAccessRangeKm =>
+      LocalStorageService.getString(LocalStorageConstants.ticketAccessRangeKm);
+
+  static Future<void> saveTicketAccessRangeKm(String rangeKm) async {
+    await LocalStorageService.setString(
+      LocalStorageConstants.ticketAccessRangeKm,
+      rangeKm.trim(),
+    );
+  }
+
   // Headers methods
   static Map<String, String> getHeadersWithToken() {
     return {"Authorization": 'Bearer ${LocalStorageDB.getToken}'};

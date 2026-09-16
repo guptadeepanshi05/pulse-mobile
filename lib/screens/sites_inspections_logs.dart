@@ -1,6 +1,5 @@
 import 'package:app/commonWidgets/loader_widget.dart';
 import 'package:app/commonWidgets/site_card.dart';
-import 'package:app/constants/api_codes.dart';
 import 'package:app/constants/constants_methods.dart';
 import 'package:app/constants/constants_strings.dart';
 import 'package:app/enum/corrective_maintenance_screen_mode_enum.dart';
@@ -249,7 +248,7 @@ class _SitesInspectionsLogsScreenState extends State<SitesInspectionsLogsScreen>
           siteLng!,
         );
 
-        final maxDistanceKm = double.parse(ApiCodes.distanceFromLocation);
+        final maxDistanceKm = resolveTicketAccessRangeKm();
         if (distanceInKm > maxDistanceKm) {
           LoaderWidget.hideLoader();
           if (!mounted) return;

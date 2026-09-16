@@ -47,4 +47,7 @@ class LocalStorageConstants {
 
   // User Profile
   static const String userProfile = "userProfile";
+
+  /// Ticket / site access radius from system-settings (`TICKET_ACCESS_RANGE`), in km.
+  static const String ticketAccessRangeKm = "ticketAccessRangeKm";
 }
