@@ -737,15 +737,29 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return _normalizedRole == 'MAKER' && activityStatus == 'COMPLETED';
   }
 
-  /// Checker should always be editable; only maker+completed is read-only.
+  bool get _isTicketManagerRole => _normalizedRole == 'TICKET_MANAGER';
+
+  /// Checker / ticket-manager can edit fields; only maker+completed is read-only.
   bool get _canEditTicketFields {
     if (!_hasAssignedRole) return false;
-    if (_normalizedRole.contains('CHECKER')) return true;
+    if (_isCheckerRole) return true;
     return !_isMakerCompletedReadOnly;
   }
 
+  /// Roles that can run checker-style review submission (when that popup is used).
   bool get _isCheckerRole {
-    return _normalizedRole.contains('CHECKER');
+    return _normalizedRole.contains('CHECKER') || _isTicketManagerRole;
+  }
+
+  /// Close-popup selection:
+  /// - CHECKER → checker popup
+  /// - TICKET_MANAGER + showReviewBtns true → checker popup
+  /// - TICKET_MANAGER + showReviewBtns false → maker popup
+  /// - others → maker popup
+  bool get _shouldShowCheckerClosePopup {
+    if (_normalizedRole.contains('CHECKER')) return true;
+    if (_isTicketManagerRole) return widget.detail.showReviewBtns;
+    return false;
   }
 
   PmisAllowedStatus? _findAllowedStatusForCheckerAction(
@@ -1940,7 +1954,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     ActivityTicketCheckerClosePopupResult? checkerCloseResult;
     double? checkerLatitude;
     double? checkerLongitude;
-    if (_isCheckerRole) {
+    if (_shouldShowCheckerClosePopup) {
       if (!_validateAll()) return;
       final checkerClose = await showActivityTicketCheckerClosePopup(
         context,
@@ -1983,7 +1997,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     final selectedStatusNormalized = normalizeActivityTicketCloseStatusForCompare(
       close.currentStatus,
     );
-    final shouldValidateAllFields = !_isCheckerRole && selectedStatusNormalized == 'completed';
+    final shouldValidateAllFields =
+        !_shouldShowCheckerClosePopup && selectedStatusNormalized == 'completed';
     if (shouldValidateAllFields && !_validateAll()) return;
 
     final postPayload = _buildPostPayload(
