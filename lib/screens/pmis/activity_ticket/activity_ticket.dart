@@ -61,6 +61,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   final Map<int, String?> _imageExternalDataByTfv = {};
   /// True while resolving [attachmentId] via `DocumentById` for an IMAGE row.
   final Set<int> _imageLoadingFromServerTfvIds = {};
+  /// tfvIds where the user picked a new file this session (real replace).
+  final Set<int> _uploadReplacedTfvIds = {};
   late List<PmisTicketFieldValue> _sortedFields;
   /// Prevents overlapping GPS taps and disables the button while resolving.
   int? _capturingGpsTfvId;
@@ -131,9 +133,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       }
       if (_isUploadType(type)) {
         _filesByTfv[f.tfvId] = [];
-        _uploadedAttachmentsByTfv[f.tfvId] = f.attachments
-            .map((m) => Map<String, dynamic>.from(m))
-            .toList();
+        _uploadedAttachmentsByTfv[f.tfvId] =
+            _normalizedLiveAttachmentsForField(f, source: f.attachments);
       }
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -149,23 +150,48 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }
 
   /// First attachment row with a usable server id, else first id from [valText].
+  /// For IMAGE rows, prefer the id in [valText] (latest) over older orphan rows.
   static Map<String, dynamic>? _primaryAttachmentMap(PmisTicketFieldValue f) {
+    final vt = f.valText?.toString().trim() ?? '';
+    final preferredIds = vt
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty && e != '0' && e.toLowerCase() != 'null')
+        .toList();
+    final want = preferredIds.isNotEmpty ? preferredIds.last : '';
+
+    if (want.isNotEmpty) {
+      Map<String, dynamic>? matched;
+      var bestTa = -1;
+      for (final a in f.attachments) {
+        if (a['isActive'] == false) continue;
+        final id = _rawAttachmentIdFromMap(a) ?? '';
+        if (id != want) continue;
+        final t = int.tryParse(a['taId']?.toString() ?? '') ?? 0;
+        if (t >= bestTa) {
+          bestTa = t;
+          matched = a;
+        }
+      }
+      if (matched != null) return matched;
+      return <String, dynamic>{
+        'attachmentId': int.tryParse(want) ?? want,
+      };
+    }
+
+    Map<String, dynamic>? best;
+    var bestTa = -1;
     for (final a in f.attachments) {
+      if (a['isActive'] == false) continue;
       final id = _rawAttachmentIdFromMap(a) ?? '';
-      if (id.isNotEmpty && id != '0' && id.toLowerCase() != 'null') {
-        return a;
+      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      final t = int.tryParse(a['taId']?.toString() ?? '') ?? 0;
+      if (t >= bestTa) {
+        bestTa = t;
+        best = a;
       }
     }
-    final vt = f.valText?.toString().trim() ?? '';
-    if (vt.isEmpty) return null;
-    final parts = vt.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty);
-    final first = parts.isEmpty ? '' : parts.first;
-    if (first.isEmpty || first == '0' || first.toLowerCase() == 'null') {
-      return null;
-    }
-    return <String, dynamic>{
-      'attachmentId': int.tryParse(first) ?? first,
-    };
+    return best;
   }
 
   static String? _primaryAttachmentServerId(PmisTicketFieldValue f) {
@@ -626,6 +652,84 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return type == 'IMAGE' || type == 'PDF' || type == 'VIDEO';
   }
 
+  /// IMAGE / Upload / Camera rows are single-file in the UI.
+  bool _isSingleFileUploadField(PmisTicketFieldValue f) {
+    final type = _normDataType(f);
+    if (type == 'IMAGE') return true;
+    if (type == 'PDF' || type == 'VIDEO') return true;
+    final allowMulti = _configMap(f)['allowMultipleFiles'];
+    return allowMulti != true;
+  }
+
+  static int _taIdFromMap(Map<String, dynamic> a) {
+    return int.tryParse(a['taId']?.toString() ?? '') ?? 0;
+  }
+
+  /// One row per [attachmentId]. Prefers the highest [taId] (newest server row).
+  /// Skips inactive rows so replaced/soft-deleted attachments are ignored.
+  List<Map<String, dynamic>> _dedupeAttachmentsByAttachmentId(
+    List<Map<String, dynamic>> attachments,
+  ) {
+    final byId = <String, Map<String, dynamic>>{};
+    final order = <String>[];
+    for (final raw in attachments) {
+      final a = Map<String, dynamic>.from(raw);
+      if (a['isActive'] == false) continue;
+      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      final existing = byId[id];
+      if (existing == null) {
+        byId[id] = a;
+        order.add(id);
+        continue;
+      }
+      // Keep the row with the larger taId; if equal, keep the later one.
+      if (_taIdFromMap(a) >= _taIdFromMap(existing)) {
+        byId[id] = a;
+      }
+    }
+    return [for (final id in order) byId[id]!];
+  }
+
+  /// Normalize live attachments for a field: active rows only, dedupe, and for
+  /// single-file fields keep only the id that matches [valText] (else newest).
+  List<Map<String, dynamic>> _normalizedLiveAttachmentsForField(
+    PmisTicketFieldValue f, {
+    List<Map<String, dynamic>>? source,
+  }) {
+    var list = _dedupeAttachmentsByAttachmentId(
+      source ??
+          (_uploadedAttachmentsByTfv[f.tfvId] ??
+              f.attachments
+                  .map((m) => Map<String, dynamic>.from(m))
+                  .toList()),
+    );
+    if (list.isEmpty || !_isSingleFileUploadField(f)) return list;
+
+    final preferred = (f.valText?.toString() ?? '')
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty && e != '0')
+        .toList();
+    if (preferred.isNotEmpty) {
+      final want = preferred.last;
+      Map<String, dynamic>? matched;
+      var bestTa = -1;
+      for (final a in list) {
+        if ((_rawAttachmentIdFromMap(a) ?? '').trim() != want) continue;
+        final t = _taIdFromMap(a);
+        if (t >= bestTa) {
+          bestTa = t;
+          matched = Map<String, dynamic>.from(a);
+        }
+      }
+      if (matched != null) return [matched];
+    }
+    // Newest server row wins.
+    list.sort((a, b) => _taIdFromMap(a).compareTo(_taIdFromMap(b)));
+    return [Map<String, dynamic>.from(list.last)];
+  }
+
   @override
   void dispose() {
     for (final c in _textByTfv.values) {
@@ -909,9 +1013,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       }
       if (_isUploadType(type)) {
         _filesByTfv[f.tfvId] = [];
-        _uploadedAttachmentsByTfv[f.tfvId] = f.attachments
-            .map((m) => Map<String, dynamic>.from(m))
-            .toList();
+        _uploadedAttachmentsByTfv[f.tfvId] =
+            _normalizedLiveAttachmentsForField(f, source: f.attachments);
       }
     }
 
@@ -1136,7 +1239,6 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     }
 
     return <String, dynamic>{
-      'taId': 0,
       'fileType': fileType,
       'latitude': latitude,
       'longitude': longitude,
@@ -1148,6 +1250,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       'attachmentId': int.tryParse(uploadedId) ?? uploadedId,
       'isActive': true,
       'remarks': '',
+      // Caller sets [taId] when replacing an existing field attachment row.
     };
   }
 
@@ -1342,11 +1445,13 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         list.clear();
         attachments.clear();
         _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+        _uploadReplacedTfvIds.add(f.tfvId);
         _imageExternalDataByTfv[f.tfvId] = null;
         _imageLoadingFromServerTfvIds.remove(f.tfvId);
       });
       return;
     }
+    // Reuse is irrelevant for POST (API is append-only); still tag the pick.
     final attachment = await _uploadImageFileWithChecks(file);
     if (attachment == null || !mounted) return;
     setState(() {
@@ -1357,6 +1462,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         ..clear()
         ..add(attachment);
       _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+      _uploadReplacedTfvIds.add(f.tfvId);
       _imageExternalDataByTfv[f.tfvId] = file.path;
       _imageLoadingFromServerTfvIds.remove(f.tfvId);
     });
@@ -1418,6 +1524,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
             files.clear();
             attachments.clear();
             _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+            _uploadReplacedTfvIds.add(f.tfvId);
           });
           return;
         }
@@ -1468,6 +1575,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
               ..clear()
               ..add(attachment);
             _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+            _uploadReplacedTfvIds.add(f.tfvId);
           });
         } finally {
           LoaderWidget.hideLoader();
@@ -1488,13 +1596,38 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return (_dropdownByTfv[f.tfvId] ?? '').trim();
     }
     if (_isUploadType(type)) {
-      final attachments =
-          _uploadedAttachmentsByTfv[f.tfvId] ?? const <Map<String, dynamic>>[];
+      // Unchanged upload: keep the server's valText so we don't rewrite the field.
+      if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
+        final apiPrimary = _normalizedLiveAttachmentsForField(
+          f,
+          source: f.attachments,
+        );
+        if (apiPrimary.isNotEmpty) {
+          return (_rawAttachmentIdFromMap(apiPrimary.first) ?? '').trim();
+        }
+        final raw = (f.valText?.toString() ?? '').trim();
+        if (raw.isEmpty) return '';
+        final parts = raw
+            .split(',')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty && e != '0')
+            .toList();
+        return parts.isEmpty ? '' : parts.last;
+      }
+
+      final attachments = _normalizedLiveAttachmentsForField(f);
       if (attachments.isEmpty) return '';
-      return attachments
-          .map((e) => _rawAttachmentIdFromMap(e) ?? '')
-          .where((e) => e.isNotEmpty && e != '0')
-          .join(',');
+      final ids = <String>[];
+      final seen = <String>{};
+      for (final a in attachments) {
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        if (id.isEmpty || id == '0' || !seen.add(id)) continue;
+        ids.add(id);
+      }
+      if (_isSingleFileUploadField(f) && ids.length > 1) {
+        return ids.last;
+      }
+      return ids.join(',');
     }
     return _textByTfv[f.tfvId]!.text.trim();
   }
@@ -1518,32 +1651,6 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return _formatBackendDate(parsed);
   }
 
-  List<String> _attachmentIdsForCompare(
-    PmisTicketFieldValue f, {
-    String? fallbackValText,
-    List<Map<String, dynamic>>? attachmentsOverride,
-  }) {
-    final ids = <String>{};
-    final attachments = attachmentsOverride ?? f.attachments;
-    for (final a in attachments) {
-      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
-      if (id.isNotEmpty && id != '0' && id.toLowerCase() != 'null') {
-        ids.add(id);
-      }
-    }
-    final rawValText = (fallbackValText ?? f.valText?.toString() ?? '').trim();
-    if (rawValText.isNotEmpty) {
-      for (final part in rawValText.split(',')) {
-        final id = part.trim();
-        if (id.isNotEmpty && id != '0' && id.toLowerCase() != 'null') {
-          ids.add(id);
-        }
-      }
-    }
-    final out = ids.toList()..sort();
-    return out;
-  }
-
   bool _isTicketFieldModified(
     PmisTicketFieldValue original, {
     required String updatedValText,
@@ -1551,17 +1658,10 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }) {
     final type = _normDataType(original);
     if (_isUploadType(type)) {
-      final oldIds = _attachmentIdsForCompare(original);
-      final newIds = _attachmentIdsForCompare(
-        original,
-        fallbackValText: updatedValText,
-        attachmentsOverride: updatedAttachments,
-      );
-      if (oldIds.length != newIds.length) return true;
-      for (var i = 0; i < oldIds.length; i++) {
-        if (oldIds[i] != newIds[i]) return true;
-      }
-      return false;
+      // Image/PDF/VIDEO: modified ONLY if the user picked/cleared a file this
+      // session. Resending the same attachment object makes the API insert a
+      // duplicate taId on every plain Submit.
+      return _uploadReplacedTfvIds.contains(original.tfvId);
     }
     final oldVal = (original.valText?.toString() ?? '').trim();
     return oldVal != updatedValText.trim();
@@ -1680,47 +1780,117 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
     }
 
-    final ids = valText
+    // No new file this session → do not touch attachments (API inserts if resent).
+    if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
+      return const <Map<String, dynamic>>[];
+    }
+
+    var ids = valText
         .split(',')
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty && e != '0')
         .toList();
-    if (ids.isEmpty) return <Map<String, dynamic>>[];
-
-    final live = _uploadedAttachmentsByTfv[f.tfvId] ?? const <Map<String, dynamic>>[];
-    // Strict replace behavior: only use current/live attachment rows.
-    // Do not merge historical `f.attachments` when posting updates.
-    final source = <Map<String, dynamic>>[
-      ...live.map((m) => Map<String, dynamic>.from(m)),
+    final seenIds = <String>{};
+    ids = [
+      for (final id in ids)
+        if (seenIds.add(id)) id,
     ];
+    if (_isSingleFileUploadField(f) && ids.length > 1) {
+      ids = [ids.last];
+    }
 
+    final keepTaId = _canonicalTaIdForField(f);
     final out = <Map<String, dynamic>>[];
-    for (final id in ids) {
-      Map<String, dynamic>? matched;
-      for (final a in source) {
-        if ((_rawAttachmentIdFromMap(a) ?? '').trim() == id) {
-          matched = Map<String, dynamic>.from(a);
-          break;
+    final seenTa = <int>{};
+
+    // Soft-delete every existing row except the canonical taId we will update.
+    for (final a in f.attachments) {
+      final t = _taIdFromMap(a);
+      if (t <= 0 || !seenTa.add(t)) continue;
+      if (keepTaId > 0 && t == keepTaId) continue;
+      final stale = Map<String, dynamic>.from(a);
+      stale['isActive'] = false;
+      stale['isModified'] = true;
+      out.add(stale);
+    }
+
+    if (ids.isEmpty) {
+      // Cleared — also deactivate the canonical row.
+      if (keepTaId > 0) {
+        Map<String, dynamic>? keepRow;
+        for (final a in f.attachments) {
+          if (_taIdFromMap(a) == keepTaId) {
+            keepRow = Map<String, dynamic>.from(a);
+            break;
+          }
+        }
+        if (keepRow != null) {
+          keepRow['isActive'] = false;
+          keepRow['isModified'] = true;
+          out.add(keepRow);
         }
       }
-      out.add(
-        matched ??
-            <String, dynamic>{
-              'taId': 0,
-              'fileType': type,
-              'latitude': 0,
-              'longitude': 0,
-              'geoAccuracyM': 0,
-              'geoSource': 'MOBILE',
-              'capturedDt': _nowForBackend(),
-              'taggedMmId': null,
-              'attachmentId': int.tryParse(id) ?? id,
-              'isActive': true,
-              'remarks': '',
-            },
-      );
+      return out;
     }
+
+    final id = ids.last;
+    final live = _normalizedLiveAttachmentsForField(f);
+    final liveRow =
+        live.isNotEmpty ? Map<String, dynamic>.from(live.first) : null;
+
+    Map<String, dynamic>? canonicalRow;
+    for (final a in f.attachments) {
+      if (_taIdFromMap(a) == keepTaId) {
+        canonicalRow = Map<String, dynamic>.from(a);
+        break;
+      }
+    }
+
+    final row = liveRow ??
+        canonicalRow ??
+        <String, dynamic>{
+          'fileType': type,
+          'latitude': 0,
+          'longitude': 0,
+          'geoAccuracyM': 0,
+          'geoSource': 'MOBILE',
+          'capturedDt': _nowForBackend(),
+          'taggedMmId': null,
+          'attachmentId': int.tryParse(id) ?? id,
+          'isActive': true,
+          'remarks': '',
+        };
+    row['attachmentId'] = int.tryParse(id) ?? id;
+    row['fileType'] = row['fileType'] ?? type;
+    row['isActive'] = true;
+    row['isModified'] = true;
+    row['capturedDt'] = _nowForBackend();
+    // UPDATE the oldest/canonical taId in place — do not omit taId (that inserts).
+    if (keepTaId > 0) {
+      row['taId'] = keepTaId;
+    } else {
+      row.remove('taId');
+    }
+    out.add(row);
     return out;
+  }
+
+  /// Oldest non-zero [taId] for this field — stable row to UPDATE on replace.
+  int _canonicalTaIdForField(PmisTicketFieldValue f) {
+    var best = 0;
+    void consider(Iterable<Map<String, dynamic>> rows) {
+      for (final a in rows) {
+        if (a['isActive'] == false) continue;
+        final t = _taIdFromMap(a);
+        if (t <= 0) continue;
+        if (best == 0 || t < best) best = t;
+      }
+    }
+
+    consider(f.attachments);
+    final live = _uploadedAttachmentsByTfv[f.tfvId];
+    if (live != null) consider(live);
+    return best;
   }
 
   Map<String, dynamic> _mapOldData(
