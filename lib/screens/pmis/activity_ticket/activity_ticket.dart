@@ -1961,25 +1961,49 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     final payloadCurrentStatusId = isCheckerSubmission
         ? widget.detail.currentStatusCode
         : close.currentStatusId;
+
+    // `currentStatusCode` must be the API string (e.g. "WIP"), not psmId.
+    // `currentStatusId` remains the numeric psmId from allowedStatuses.
+    String? resolvedStatusCodeString = isCheckerSubmission
+        ? null
+        : (close.currentStatusCode.trim().isNotEmpty
+            ? close.currentStatusCode.trim()
+            : null);
     int? resolvedStatusNumeric = payloadCurrentStatusId;
-    if (resolvedStatusNumeric == null) {
-      final targetStatusText = isCheckerSubmission
-          ? widget.detail.currentStatus
-          : close.currentStatus;
-      final normalizedTarget =
-          normalizeActivityTicketCloseStatusForCompare(targetStatusText);
-      for (final status in widget.detail.allowedStatuses) {
-        final nameNorm =
-            normalizeActivityTicketCloseStatusForCompare(status.statusName);
-        final codeNorm =
-            normalizeActivityTicketCloseStatusForCompare(status.statusCode);
-        if (normalizedTarget == nameNorm || normalizedTarget == codeNorm) {
-          resolvedStatusNumeric = status.psmId;
-          break;
-        }
+
+    final targetStatusText = isCheckerSubmission
+        ? widget.detail.currentStatus
+        : close.currentStatus;
+    final normalizedTarget =
+        normalizeActivityTicketCloseStatusForCompare(targetStatusText);
+    for (final status in widget.detail.allowedStatuses) {
+      final nameNorm =
+          normalizeActivityTicketCloseStatusForCompare(status.statusName);
+      final codeNorm =
+          normalizeActivityTicketCloseStatusForCompare(status.statusCode);
+      final matchesText =
+          normalizedTarget == nameNorm || normalizedTarget == codeNorm;
+      final matchesId = resolvedStatusNumeric != null &&
+          status.psmId != null &&
+          status.psmId == resolvedStatusNumeric;
+      if (!matchesText && !matchesId) continue;
+
+      resolvedStatusNumeric ??= status.psmId;
+      if (resolvedStatusCodeString == null ||
+          resolvedStatusCodeString.isEmpty) {
+        resolvedStatusCodeString = status.statusCode.trim();
       }
+      break;
     }
+
     final payloadCurrentStatusNumeric = resolvedStatusNumeric ?? 0;
+    final payloadCurrentStatusCodeString =
+        (resolvedStatusCodeString != null &&
+                resolvedStatusCodeString.isNotEmpty)
+            ? resolvedStatusCodeString
+            : (isCheckerSubmission
+                ? widget.detail.currentStatus
+                : close.currentStatusCode);
     final payloadParentRemarks = isCheckerSubmission
         ? (widget.detail.remarks ?? '')
         : close.remarks;
@@ -1994,7 +2018,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       'atId': widget.activityTicketId,
       'ppaId': widget.detail.ppaId,
       'currentStatus': payloadCurrentStatus,
-      'currentStatusCode': payloadCurrentStatusNumeric,
+      'currentStatusCode': payloadCurrentStatusCodeString,
       'currentStatusId': payloadCurrentStatusNumeric,
       'currentStatusDt': _nowForBackend(),
       'makerDesignationMstId': widget.detail.makerDesignationMstId ?? 0,
