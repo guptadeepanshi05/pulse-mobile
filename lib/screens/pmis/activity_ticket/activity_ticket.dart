@@ -2188,11 +2188,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     }
     if (!mounted) return;
     if (close == null) return;
-    final selectedStatusNormalized = normalizeActivityTicketCloseStatusForCompare(
-      close.currentStatus,
-    );
+    // Require all ticket fields for Completed and Completed – To Be Repeated.
     final shouldValidateAllFields =
-        !_shouldShowCheckerClosePopup && selectedStatusNormalized == 'completed';
+        !_shouldShowCheckerClosePopup && close.isRepeatNature;
     if (shouldValidateAllFields && !_validateAll()) return;
 
     final postPayload = _buildPostPayload(
