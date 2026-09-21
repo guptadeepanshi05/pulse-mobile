@@ -85,6 +85,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   static String _normControlType(PmisTicketFieldValue f) =>
       (f.subActivityControlType ?? '').trim().toUpperCase();
 
+  /// True for VideoRecorder / VIDEO_RECORDER / video recorder control types.
+  static bool _isVideoRecorderControl(PmisTicketFieldValue f) {
+    final c = _normControlType(f)
+        .replaceAll('_', '')
+        .replaceAll('-', '')
+        .replaceAll(' ', '');
+    return c == 'VIDEORECORDER' || c.contains('VIDEORECORD');
+  }
+
   /// API may use camelCase, snake_case, or PascalCase for the image file id.
   static String? _rawAttachmentIdFromMap(Map<String, dynamic> a) {
     final v = a['attachmentId'] ??
@@ -2567,8 +2576,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           ],
         );
       case 'VIDEO':
-        final useVideoRecorder = _normControlType(f) == 'VIDEORECORDER';
-        // Same UX for every video row: system video picker only, one file, replace on re-pick.
+        final useVideoRecorder = _isVideoRecorderControl(f);
+        // Upload → gallery video picker; VideoRecorder → device camera video.
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2577,11 +2586,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
               label: label,
               req: req,
               fileTypeForAttachment: 'VIDEO',
-              acceptedFileTypes: '(Video only)',
+              acceptedFileTypes: useVideoRecorder
+                  ? '(Record video)'
+                  : '(Video only)',
               pickAllowedExtensions: null,
               useVideoPicker: !useVideoRecorder,
               useVideoRecorder: useVideoRecorder,
-              placeholder: 'Add video',
+              placeholder:
+                  useVideoRecorder ? 'Record video' : 'Add video',
             ),
             if (_hasPmisVideoAttachmentForPlay(f)) ...[
               const SizedBox(height: 10),

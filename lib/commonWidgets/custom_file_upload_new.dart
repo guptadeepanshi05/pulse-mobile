@@ -58,15 +58,29 @@ class CustomFileUploadNew extends StatelessWidget {
 
   Future<void> _pickFile(BuildContext context) async {
     if (useVideoRecorder) {
-      final recordedFile = await Navigator.push<File>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const CustomVideoRecorderScreen(),
-        ),
-      );
-      if (recordedFile == null) return;
-      final file = File(recordedFile.path);
-      await _validateAndSelectFile(context, file);
+      // Native camera video recorder (not still photo). Prefer system UI so
+      // users clearly get video capture rather than a photo shutter screen.
+      try {
+        final picker = ImagePicker();
+        final picked = await picker.pickVideo(
+          source: ImageSource.camera,
+          maxDuration: const Duration(seconds: 60),
+        );
+        if (picked == null) return;
+        final file = File(picked.path);
+        await _validateAndSelectFile(context, file);
+      } catch (_) {
+        // Fallback to in-app recorder if the platform picker fails.
+        if (!context.mounted) return;
+        final recordedFile = await Navigator.push<File>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const CustomVideoRecorderScreen(),
+          ),
+        );
+        if (recordedFile == null) return;
+        await _validateAndSelectFile(context, File(recordedFile.path));
+      }
       return;
     }
 
@@ -99,23 +113,47 @@ class CustomFileUploadNew extends StatelessWidget {
   }
 
   Future<void> _validateAndSelectFile(BuildContext context, File file) async {
-    // Honor [pickAllowedExtensions] when provided so callers can opt-in to
-    // additional file types (e.g. images) without being blocked by the
-    // default PDF/DOC/DOCX allowlist.
-    final allowedExts =
-        (pickAllowedExtensions != null && pickAllowedExtensions!.isNotEmpty)
-            ? pickAllowedExtensions!.map((e) => e.toLowerCase()).toList()
-            : _defaultAllowedExtensions;
+    // Video picker / recorder already constrain selection to videos.
+    // Do not apply the default PDF/DOC/DOCX allowlist to those flows.
+    if (!useVideoPicker && !useVideoRecorder) {
+      // Honor [pickAllowedExtensions] when provided so callers can opt-in to
+      // additional file types (e.g. images) without being blocked by the
+      // default PDF/DOC/DOCX allowlist.
+      final allowedExts =
+          (pickAllowedExtensions != null && pickAllowedExtensions!.isNotEmpty)
+              ? pickAllowedExtensions!.map((e) => e.toLowerCase()).toList()
+              : _defaultAllowedExtensions;
 
-    final extension = file.path.split('.').last.toLowerCase();
-    if (!allowedExts.contains(extension)) {
-      if (!context.mounted) return;
-      final readable = allowedExts.map((e) => e.toUpperCase()).join(', ');
-      Toastbar.showErrorToastbar(
-        'Only $readable files are allowed.',
-        context,
-      );
-      return;
+      final extension = file.path.split('.').last.toLowerCase();
+      if (!allowedExts.contains(extension)) {
+        if (!context.mounted) return;
+        final readable = allowedExts.map((e) => e.toUpperCase()).join(', ');
+        Toastbar.showErrorToastbar(
+          'Only $readable files are allowed.',
+          context,
+        );
+        return;
+      }
+    } else {
+      // Soft-check common video extensions from gallery / recorder.
+      const videoExts = <String>[
+        'mp4',
+        'mov',
+        'm4v',
+        'avi',
+        'mkv',
+        '3gp',
+        'webm',
+      ];
+      final extension = file.path.split('.').last.toLowerCase();
+      if (extension.isNotEmpty && !videoExts.contains(extension)) {
+        if (!context.mounted) return;
+        Toastbar.showErrorToastbar(
+          'Only video files are allowed.',
+          context,
+        );
+        return;
+      }
     }
 
     // Check file size (2 MB = 2 * 1024 * 1024 bytes)

@@ -183,19 +183,38 @@ class _CustomVideoRecorderScreenState extends State<CustomVideoRecorderScreen>
                     bottom: 40,
                     left: 0,
                     right: 0,
-                    child: Center(
-                      child: GestureDetector(
-                        onTap: _isBusy ? null : _toggleRecording,
-                        child: Container(
-                          width: 70,
-                          height: 70,
-                          decoration: BoxDecoration(
-                            color: _isRecording ? Colors.red : Colors.white,
-                            shape: BoxShape.circle,
-                            border: Border.all(width: 4, color: Colors.grey),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _isRecording
+                              ? 'Recording… tap to stop'
+                              : 'Tap to start video recording',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
-                      ),
+                        const SizedBox(height: 12),
+                        Center(
+                          child: GestureDetector(
+                            onTap: _isBusy ? null : _toggleRecording,
+                            child: Container(
+                              width: 70,
+                              height: 70,
+                              decoration: BoxDecoration(
+                                color: _isRecording ? Colors.red : Colors.white,
+                                shape: BoxShape.circle,
+                                border: Border.all(width: 4, color: Colors.grey),
+                              ),
+                              child: _isRecording
+                                  ? const Icon(Icons.stop, color: Colors.white, size: 32)
+                                  : const Icon(Icons.videocam, color: Colors.black87, size: 32),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
