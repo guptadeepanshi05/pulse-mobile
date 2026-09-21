@@ -160,7 +160,7 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
   }
 
   bool get _statusRequired => !_isMakerWithExistingStatus;
-  bool get _remarksRequired => !_isMakerWithExistingStatus;
+  bool get _remarksRequired => true;
 
   /// Repetition date should appear only for Completed - To Be Repeated.
   bool _repetitionDateEnabled(String? status) {
@@ -374,6 +374,7 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
                 TextFormField(
                   controller: _remarksController,
                   maxLines: 4,
+                
                   decoration: _fieldDecoration(hint: 'Remarks'),
                   validator: (v) =>
                       (_remarksRequired && (v == null || v.trim().isEmpty))
