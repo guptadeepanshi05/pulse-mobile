@@ -54,6 +54,8 @@ class ActivityTicketScreen extends StatefulWidget {
 
 class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   final Map<int, TextEditingController> _textByTfv = {};
+  /// Longitude controllers for [COORDINATES] fields (lat lives in [_textByTfv]).
+  final Map<int, TextEditingController> _lngByTfv = {};
   final Map<int, String?> _dropdownByTfv = {};
   final Map<int, List<File>> _filesByTfv = {};
   final Map<int, List<Map<String, dynamic>>> _uploadedAttachmentsByTfv = {};
@@ -110,6 +112,45 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return n.contains('long');
   }
 
+  /// True when a Coordinates row should show both Lat + Lng (and store
+  /// `lat, long` in [valText]). Separate fields named Latitude/Longitude stay
+  /// single-value.
+  static bool _isCombinedCoordinatesField(PmisTicketFieldValue f) {
+    if (_normDataType(f) != 'COORDINATES') return false;
+    final n = (f.subActivityName ?? '').toLowerCase();
+    final isLatOnly = n.contains('latitude') && !n.contains('longitude');
+    final isLngOnly = n.contains('longitude') ||
+        (n.contains('lng') && !n.contains('latitude')) ||
+        (n.contains('long') && !n.contains('latitude'));
+    return !isLatOnly && !isLngOnly;
+  }
+
+  /// Parses `valText` ("lat, long") or falls back to field latitude/longitude.
+  static (String lat, String lng) _initialCoordinates(PmisTicketFieldValue f) {
+    final raw = (f.valText?.toString() ?? '').trim();
+    if (raw.isNotEmpty) {
+      final parts = raw
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (parts.length >= 2) return (parts[0], parts[1]);
+      if (parts.length == 1) return (parts[0], '');
+    }
+
+    bool usable(String? v) {
+      final s = (v ?? '').trim();
+      if (s.isEmpty) return false;
+      final n = num.tryParse(s);
+      if (n != null && n == 0) return false;
+      return s != '0' && s != '0.0' && s != '0.00';
+    }
+
+    final lat = (f.latitude ?? '').toString().trim();
+    final lng = (f.longitude ?? '').toString().trim();
+    return (usable(lat) ? lat : '', usable(lng) ? lng : '');
+  }
+
   static Map<String, dynamic> _configMap(PmisTicketFieldValue f) {
     final c = f.configJson;
     if (c is Map) return Map<String, dynamic>.from(c);
@@ -124,7 +165,13 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     )..sort((a, b) => (a.seqNo ?? 0).compareTo(b.seqNo ?? 0));
 
     for (final f in _sortedFields) {
-      _textByTfv[f.tfvId] = TextEditingController(text: _initialText(f));
+      if (_isCombinedCoordinatesField(f)) {
+        final coords = _initialCoordinates(f);
+        _textByTfv[f.tfvId] = TextEditingController(text: coords.$1);
+        _lngByTfv[f.tfvId] = TextEditingController(text: coords.$2);
+      } else {
+        _textByTfv[f.tfvId] = TextEditingController(text: _initialText(f));
+      }
       final type = _normDataType(f);
       if (type == 'DROPDOWN') {
         final v = f.valText?.toString().trim();
@@ -735,6 +782,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     for (final c in _textByTfv.values) {
       c.dispose();
     }
+    for (final c in _lngByTfv.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -952,6 +1002,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   _AtFieldSnapshot _captureFieldSnapshot() {
     return _AtFieldSnapshot(
       textByTfv: {for (final e in _textByTfv.entries) e.key: e.value.text},
+      lngByTfv: {for (final e in _lngByTfv.entries) e.key: e.value.text},
       dropdownByTfv: Map<int, String?>.from(_dropdownByTfv),
       uploadedAttachmentsByTfv: {
         for (final e in _uploadedAttachmentsByTfv.entries)
@@ -968,6 +1019,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     for (final e in s.textByTfv.entries) {
       final c = _textByTfv[e.key];
       if (c != null) c.text = e.value;
+    }
+    for (final e in s.lngByTfv.entries) {
+      final c = _lngByTfv[e.key];
+      if (c != null) {
+        c.text = e.value;
+      } else {
+        _lngByTfv[e.key] = TextEditingController(text: e.value);
+      }
     }
     _dropdownByTfv
       ..clear()
@@ -994,6 +1053,10 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       c.dispose();
     }
     _textByTfv.clear();
+    for (final c in _lngByTfv.values) {
+      c.dispose();
+    }
+    _lngByTfv.clear();
     _dropdownByTfv.clear();
     _filesByTfv.clear();
     _uploadedAttachmentsByTfv.clear();
@@ -1004,7 +1067,13 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       ..sort((a, b) => (a.seqNo ?? 0).compareTo(b.seqNo ?? 0));
 
     for (final f in _sortedFields) {
-      _textByTfv[f.tfvId] = TextEditingController(text: _initialText(f));
+      if (_isCombinedCoordinatesField(f)) {
+        final coords = _initialCoordinates(f);
+        _textByTfv[f.tfvId] = TextEditingController(text: coords.$1);
+        _lngByTfv[f.tfvId] = TextEditingController(text: coords.$2);
+      } else {
+        _textByTfv[f.tfvId] = TextEditingController(text: _initialText(f));
+      }
       final type = _normDataType(f);
       if (type == 'DROPDOWN') {
         final v = f.valText?.toString().trim();
@@ -1177,9 +1246,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     try {
       final loc = await LocationService.getCurrentLocationForForm();
       if (!mounted) return;
-      final isLng = _isLongitudeField(f);
-      final v = isLng ? loc.longitude : loc.latitude;
-      _textByTfv[f.tfvId]!.text = v.toStringAsFixed(6);
+      if (_isCombinedCoordinatesField(f)) {
+        _textByTfv[f.tfvId]!.text = loc.latitude.toStringAsFixed(6);
+        _lngByTfv[f.tfvId] ??= TextEditingController();
+        _lngByTfv[f.tfvId]!.text = loc.longitude.toStringAsFixed(6);
+      } else {
+        final isLng = _isLongitudeField(f);
+        final v = isLng ? loc.longitude : loc.latitude;
+        _textByTfv[f.tfvId]!.text = v.toStringAsFixed(6);
+      }
       setState(() {});
     } catch (e) {
       if (mounted) {
@@ -1595,6 +1670,12 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     if (type == 'DROPDOWN') {
       return (_dropdownByTfv[f.tfvId] ?? '').trim();
     }
+    if (_isCombinedCoordinatesField(f)) {
+      final lat = (_textByTfv[f.tfvId]?.text ?? '').trim();
+      final lng = (_lngByTfv[f.tfvId]?.text ?? '').trim();
+      if (lat.isEmpty && lng.isEmpty) return '';
+      return '$lat, $lng';
+    }
     if (_isUploadType(type)) {
       // Unchanged upload: keep the server's valText so we don't rewrite the field.
       if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
@@ -1741,6 +1822,18 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     required List<Map<String, dynamic>> attachments,
     required bool isModified,
   }) {
+    var latitude = f.latitude ?? '0';
+    var longitude = f.longitude ?? '0';
+    if (_isCombinedCoordinatesField(f)) {
+      final parts = valText
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (parts.isNotEmpty) latitude = parts[0];
+      if (parts.length >= 2) longitude = parts[1];
+    }
+
     return <String, dynamic>{
       'tfvId': f.tfvId,
       'valText': valText,
@@ -1748,8 +1841,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       'valInt': f.valInt,
       'valDate': _normalizeDateString(f.valDate?.toString()),
       'valJson': f.valJson,
-      'latitude': f.latitude ?? '0',
-      'longitude': f.longitude ?? '0',
+      'latitude': latitude,
+      'longitude': longitude,
       'geoAccuracyM': f.geoAccuracyM ?? '0',
       'geoSource': f.geoSource ?? '',
       'isActive': f.isActive,
@@ -2105,8 +2198,28 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         continue;
       }
 
-      if (type == 'TEXT' || type == 'DATE' || type == 'COORDINATES') {
+      if (type == 'TEXT' || type == 'DATE') {
         if (req && _textByTfv[f.tfvId]!.text.trim().isEmpty) {
+          Toastbar.showErrorToastbar(
+            '${f.subActivityName} is required',
+            context,
+          );
+          return false;
+        }
+      }
+
+      if (type == 'COORDINATES') {
+        if (_isCombinedCoordinatesField(f)) {
+          final lat = (_textByTfv[f.tfvId]?.text ?? '').trim();
+          final lng = (_lngByTfv[f.tfvId]?.text ?? '').trim();
+          if (req && (lat.isEmpty || lng.isEmpty)) {
+            Toastbar.showErrorToastbar(
+              '${f.subActivityName}: Latitude and Longitude are required',
+              context,
+            );
+            return false;
+          }
+        } else if (req && _textByTfv[f.tfvId]!.text.trim().isEmpty) {
           Toastbar.showErrorToastbar(
             '${f.subActivityName} is required',
             context,
@@ -2500,6 +2613,62 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         final isGps =
             (f.subActivityControlType ?? '').trim().toUpperCase() ==
                 'GPSBUTTON';
+        final numberKeyboard = const TextInputType.numberWithOptions(
+          decimal: true,
+          signed: true,
+        );
+        final numberFormatters = <TextInputFormatter>[
+          FilteringTextInputFormatter.allow(RegExp(r'^-?\d*\.?\d{0,8}$')),
+        ];
+        if (_isCombinedCoordinatesField(f)) {
+          _lngByTfv[f.tfvId] ??= TextEditingController();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CustomFormField(
+                label: '$label - Latitude',
+                controller: _textByTfv[f.tfvId],
+                hintText: 'Latitude',
+                isRequired: req && editable,
+                isEditable: editable,
+                keyboardType: numberKeyboard,
+                inputFormatters: numberFormatters,
+                inputBorderRadius: 8,
+              ),
+              const SizedBox(height: 12),
+              CustomFormField(
+                label: '$label - Longitude',
+                controller: _lngByTfv[f.tfvId],
+                hintText: 'Longitude',
+                isRequired: req && editable,
+                isEditable: editable,
+                keyboardType: numberKeyboard,
+                inputFormatters: numberFormatters,
+                inputBorderRadius: 8,
+              ),
+              if (isGps) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: !editable || _capturingGpsTfvId != null
+                        ? null
+                        : () => _captureGps(f),
+                    icon: const Icon(Icons.my_location, color: AppColors.white),
+                    label: const Text(
+                      'Use current location',
+                      style: TextStyle(
+                        color: AppColors.white,
+                        fontFamily: poppins,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          );
+        }
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2509,11 +2678,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
               hintText: _isLongitudeField(f) ? 'Longitude' : 'Latitude',
               isRequired: req && editable,
               isEditable: editable,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true, signed: true),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'^-?\d*\.?\d{0,8}$')),
-              ],
+              keyboardType: numberKeyboard,
+              inputFormatters: numberFormatters,
               inputBorderRadius: 8,
             ),
             if (isGps) ...[
@@ -2709,6 +2875,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
 
 class _AtFieldSnapshot {
   final Map<int, String> textByTfv;
+  final Map<int, String> lngByTfv;
   final Map<int, String?> dropdownByTfv;
   final Map<int, List<Map<String, dynamic>>> uploadedAttachmentsByTfv;
   final Map<int, List<File>> filesByTfv;
@@ -2716,6 +2883,7 @@ class _AtFieldSnapshot {
 
   _AtFieldSnapshot({
     required this.textByTfv,
+    required this.lngByTfv,
     required this.dropdownByTfv,
     required this.uploadedAttachmentsByTfv,
     required this.filesByTfv,
