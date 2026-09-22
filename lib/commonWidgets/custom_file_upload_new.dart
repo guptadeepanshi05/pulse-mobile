@@ -24,6 +24,9 @@ class CustomFileUploadNew extends StatelessWidget {
   final Function(dynamic)? onServerAttachmentClicked; // Callback when server attachment is clicked
   final Function()? onServerAttachmentDeleted; // Callback when server attachment is deleted
 
+  /// When set, tapping a selected / uploaded file name invokes this (e.g. play video).
+  final Function(File file)? onFileNameTapped;
+
   /// When set (e.g. `['pdf']`), opens the document picker with [FileType.custom]
   /// instead of [FileType.any] (which can default to gallery/images on some devices).
   final List<String>? pickAllowedExtensions;
@@ -34,6 +37,16 @@ class CustomFileUploadNew extends StatelessWidget {
 
   /// When true, records video from device camera.
   final bool useVideoRecorder;
+
+  /// When true, opens the system image gallery picker.
+  final bool useImagePicker;
+
+  /// When true, opens the device camera for a still photo.
+  final bool useImageCamera;
+
+  /// When true, each pick is appended (caller manages [uploadedFiles] list).
+  /// When false, a new pick replaces the previous selection.
+  final bool allowMultipleFiles;
 
   const CustomFileUploadNew({
     super.key,
@@ -51,9 +64,13 @@ class CustomFileUploadNew extends StatelessWidget {
     this.serverAttachmentId,
     this.onServerAttachmentClicked,
     this.onServerAttachmentDeleted,
+    this.onFileNameTapped,
     this.pickAllowedExtensions,
     this.useVideoPicker = false,
     this.useVideoRecorder = false,
+    this.useImagePicker = false,
+    this.useImageCamera = false,
+    this.allowMultipleFiles = false,
   });
 
   Future<void> _pickFile(BuildContext context) async {
@@ -95,6 +112,18 @@ class CustomFileUploadNew extends StatelessWidget {
       return;
     }
 
+    if (useImageCamera || useImagePicker) {
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: useImageCamera ? ImageSource.camera : ImageSource.gallery,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+      final file = File(picked.path);
+      await _validateAndSelectFile(context, file);
+      return;
+    }
+
     final FilePickerResult? result;
     final exts =
         (pickAllowedExtensions != null && pickAllowedExtensions!.isNotEmpty)
@@ -103,19 +132,29 @@ class CustomFileUploadNew extends StatelessWidget {
     result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: exts,
-      allowMultiple: false,
+      allowMultiple: allowMultipleFiles,
     );
 
-    if (result != null && result.files.single.path != null) {
-      final file = File(result.files.single.path!);
-      await _validateAndSelectFile(context, file);
+    if (result == null || result.files.isEmpty) return;
+    if (allowMultipleFiles) {
+      for (final platformFile in result.files) {
+        final path = platformFile.path;
+        if (path == null) continue;
+        await _validateAndSelectFile(context, File(path));
+      }
+      return;
+    }
+    final path = result.files.single.path;
+    if (path != null) {
+      await _validateAndSelectFile(context, File(path));
     }
   }
 
   Future<void> _validateAndSelectFile(BuildContext context, File file) async {
-    // Video picker / recorder already constrain selection to videos.
-    // Do not apply the default PDF/DOC/DOCX allowlist to those flows.
-    if (!useVideoPicker && !useVideoRecorder) {
+    final isMediaFlow =
+        useVideoPicker || useVideoRecorder || useImagePicker || useImageCamera;
+    // Video / image pickers already constrain selection — don't apply PDF allowlist.
+    if (!isMediaFlow) {
       // Honor [pickAllowedExtensions] when provided so callers can opt-in to
       // additional file types (e.g. images) without being blocked by the
       // default PDF/DOC/DOCX allowlist.
@@ -134,7 +173,7 @@ class CustomFileUploadNew extends StatelessWidget {
         );
         return;
       }
-    } else {
+    } else if (useVideoPicker || useVideoRecorder) {
       // Soft-check common video extensions from gallery / recorder.
       const videoExts = <String>[
         'mp4',
@@ -150,6 +189,25 @@ class CustomFileUploadNew extends StatelessWidget {
         if (!context.mounted) return;
         Toastbar.showErrorToastbar(
           'Only video files are allowed.',
+          context,
+        );
+        return;
+      }
+    } else if (useImagePicker || useImageCamera) {
+      const imageExts = <String>[
+        'jpg',
+        'jpeg',
+        'png',
+        'gif',
+        'webp',
+        'bmp',
+        'heic',
+      ];
+      final extension = file.path.split('.').last.toLowerCase();
+      if (extension.isNotEmpty && !imageExts.contains(extension)) {
+        if (!context.mounted) return;
+        Toastbar.showErrorToastbar(
+          'Only image files are allowed.',
           context,
         );
         return;
@@ -231,22 +289,35 @@ class CustomFileUploadNew extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(
-                          Icons.attach_file,
+                          _isVideoFile(selectedFile!.path)
+                              ? Icons.play_circle_outline
+                              : Icons.attach_file,
                           size: 18,
                           color: AppColors.color555555,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Text(
-                            _getFileName(selectedFile!.path),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w400,
-                              color: AppColors.color555555,
-                              fontFamily: fontFamilyMontserrat,
-                              fontSize: 12,
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: onFileNameTapped == null
+                                ? null
+                                : () => onFileNameTapped!(selectedFile!),
+                            child: Text(
+                              _getFileName(selectedFile!.path),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w400,
+                                color: onFileNameTapped != null
+                                    ? AppColors.textBlueAccent
+                                    : AppColors.color555555,
+                                fontFamily: fontFamilyMontserrat,
+                                fontSize: 12,
+                                decoration: onFileNameTapped != null
+                                    ? TextDecoration.underline
+                                    : TextDecoration.none,
+                              ),
+                              textAlign: TextAlign.center,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            textAlign: TextAlign.center,
-                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -398,6 +469,8 @@ class CustomFileUploadNew extends StatelessWidget {
 
   Widget _buildUploadedFileItem(BuildContext context, File file) {
     final isImage = _isImageFile(file.path);
+    final isVideo = _isVideoFile(file.path);
+    final canPreview = isImage || (isVideo && onFileNameTapped != null);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -412,25 +485,34 @@ class CustomFileUploadNew extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            _getFileIcon(file.path),
+            isVideo ? Icons.play_circle_outline : _getFileIcon(file.path),
             size: 20,
             color: AppColors.color555555,
           ),
           const SizedBox(width: 12),
           Expanded(
             child: GestureDetector(
-              onTap: isImage ? () => _showImagePreview(context, file) : null,
+              onTap: !canPreview
+                  ? null
+                  : () {
+                      if (isImage) {
+                        _showImagePreview(context, file);
+                      } else if (isVideo) {
+                        onFileNameTapped!(file);
+                      }
+                    },
               child: Text(
                 _getFileName(file.path),
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w400,
-                  color: isImage
+                  color: canPreview
                       ? AppColors.textBlueAccent
                       : AppColors.color555555,
                   fontFamily: fontFamilyMontserrat,
-                  decoration:
-                      isImage ? TextDecoration.underline : TextDecoration.none,
+                  decoration: canPreview
+                      ? TextDecoration.underline
+                      : TextDecoration.none,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -454,6 +536,12 @@ class CustomFileUploadNew extends StatelessWidget {
   bool _isImageFile(String path) {
     final extension = path.split('.').last.toLowerCase();
     return const ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
+        .contains(extension);
+  }
+
+  bool _isVideoFile(String path) {
+    final extension = path.split('.').last.toLowerCase();
+    return const ['mp4', 'mov', 'm4v', 'avi', 'mkv', '3gp', 'webm']
         .contains(extension);
   }
 

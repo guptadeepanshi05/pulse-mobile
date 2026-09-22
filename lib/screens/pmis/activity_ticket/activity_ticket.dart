@@ -10,13 +10,13 @@ import 'package:app/commonWidgets/custom_form_dropdown.dart';
 import 'package:app/commonWidgets/custom_form_field.dart';
 import 'package:app/commonWidgets/custom_image_upload_field.dart';
 import 'package:app/commonWidgets/loader_widget.dart';
+import 'package:app/commonWidgets/safe_file_image.dart';
 import 'package:app/commonWidgets/safe_svg_picture.dart';
 import 'package:app/constants/app_colors.dart';
 import 'package:app/constants/app_images.dart';
 import 'package:app/constants/constants_strings.dart';
 import 'package:app/enum/activity_type_enum.dart';
 import 'package:app/models/pmis_activity_ticket_model.dart';
-import 'package:app/services/document_bytes_save_service.dart';
 import 'package:app/services/location_service.dart';
 import 'package:app/services/service_locator.dart';
 import 'package:app/services/upload_dcouments.dart';
@@ -163,6 +163,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   static Map<String, dynamic> _configMap(PmisTicketFieldValue f) {
     final c = f.configJson;
     if (c is Map) return Map<String, dynamic>.from(c);
+    if (c is String) {
+      final trimmed = c.trim();
+      if (trimmed.isEmpty) return const <String, dynamic>{};
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
     return const <String, dynamic>{};
   }
 
@@ -190,7 +198,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       if (_isUploadType(type)) {
         _filesByTfv[f.tfvId] = [];
         _uploadedAttachmentsByTfv[f.tfvId] =
-            _normalizedLiveAttachmentsForField(f, source: f.attachments);
+            _hydrateAttachmentsForField(f, source: f.attachments);
       }
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -199,9 +207,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         if (type == 'IMAGE') {
           _loadExistingActivityTicketImage(f);
         } else if (type == 'VIDEO' || type == 'PDF') {
-          _prefetchUploadFieldFromServerIfNeeded(f);
+          if (_allowsMultipleFiles(f)) {
+            // Multi list is attachment-driven; drop any stale prefetch temps.
+            _filesByTfv[f.tfvId]?.clear();
+          } else {
+            _prefetchUploadFieldFromServerIfNeeded(f);
+          }
         }
       }
+      if (mounted) setState(() {});
     });
   }
 
@@ -296,6 +310,25 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       if (v != null && v.isNotEmpty) return v;
     }
     return fallback;
+  }
+
+  /// Friendly label for a server attachment chip (avoids bare `file_123`).
+  String _serverAttachmentLabel(
+    PmisTicketFieldValue f,
+    Map<String, dynamic> a,
+    String id,
+  ) {
+    final fromApi = _attachmentDisplayName(a, '').trim();
+    if (fromApi.isNotEmpty &&
+        !fromApi.toLowerCase().startsWith('file_') &&
+        fromApi.toLowerCase() != 'attachment') {
+      return fromApi;
+    }
+    final type = _normDataType(f);
+    if (type == 'VIDEO') return 'Video $id';
+    if (type == 'PDF') return 'PDF $id';
+    if (type == 'IMAGE') return 'Image $id';
+    return 'File $id';
   }
 
   static String? _formatActivityTicketImageDisplayString(String? raw) {
@@ -415,7 +448,11 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }
 
   /// Pull VIDEO/PDF bytes via [DocumentById] into a temp file for preview.
+  /// Skipped for multi-file fields — those are listed as server chips instead
+  /// (prefetching only the primary id duplicated the UI as at_*.mp4 + file_*).
   Future<void> _prefetchUploadFieldFromServerIfNeeded(PmisTicketFieldValue f) async {
+    if (_allowsMultipleFiles(f)) return;
+
     final prim = _primaryAttachmentMapForUi(f);
     if (prim == null) return;
     final id = _rawAttachmentIdFromMap(prim) ?? '';
@@ -466,6 +503,22 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     dynamic attachmentId,
     PmisTicketFieldValue f,
   ) async {
+    // Videos / images open in-app; PDFs use the system opener.
+    if (_normDataType(f) == 'VIDEO') {
+      await _showServerVideoPopup(
+        f,
+        attachmentId: attachmentId?.toString(),
+      );
+      return;
+    }
+    if (_normDataType(f) == 'IMAGE') {
+      await _previewServerImage(
+        f,
+        attachmentId: attachmentId?.toString(),
+      );
+      return;
+    }
+
     final idStr = attachmentId?.toString().trim() ?? '';
     if (idStr.isEmpty) return;
     final docId = int.tryParse(idStr);
@@ -511,30 +564,62 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     }
   }
 
-  /// Numeric server [attachmentId] suitable for `DocumentById` (PDF row).
-  bool _hasPmisPdfAttachmentForDownload(PmisTicketFieldValue f) {
-    if (_normDataType(f) != 'PDF') return false;
-    final id = _primaryAttachmentServerIdForUi(f);
-    if (id == null || id.isEmpty) return false;
-    if (id.contains('LOCAL_IMAGE_ID')) return true;
-    final n = int.tryParse(id.trim());
-    return n != null && n > 0;
-  }
-
-  String _suggestedDownloadPdfName(PmisTicketFieldValue f) {
-    final prim = _primaryAttachmentMapForUi(f);
-    final fallback = 'ticket_${widget.detail.atId}_tfv_${f.tfvId}.pdf';
-    var name = prim != null ? _attachmentDisplayName(prim, fallback) : fallback;
-    name = name.trim();
-    if (name.isEmpty) return fallback;
-    return name;
-  }
-
-  Future<void> _downloadPdfAttachmentToDevice(PmisTicketFieldValue f) async {
-    final idStr = _primaryAttachmentServerIdForUi(f);
-    if (idStr == null || idStr.trim().isEmpty) {
+  Future<void> _previewLocalImageFile(File file) async {
+    if (!await file.exists()) {
       if (mounted) {
-        Toastbar.showErrorToastbar('No file to download', context);
+        Toastbar.showErrorToastbar('Image file not found', context);
+      }
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                child: SafeImageFile(
+                  file: file,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Center(
+                      child: Icon(
+                        Icons.broken_image,
+                        color: Colors.white,
+                        size: 48,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _previewServerImage(
+    PmisTicketFieldValue f, {
+    String? attachmentId,
+  }) async {
+    final idStr =
+        (attachmentId ?? _primaryAttachmentServerIdForUi(f))?.trim() ?? '';
+    if (idStr.isEmpty) {
+      if (mounted) {
+        Toastbar.showErrorToastbar('No image to preview', context);
       }
       return;
     }
@@ -543,14 +628,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     LoaderWidget.showLoader(context);
     try {
       Uint8List? bytes;
-      final localFile = await _localFileFromUniqueId(idStr.trim());
+      final localFile = await _localFileFromUniqueId(idStr);
       if (localFile != null) {
         bytes = await localFile.readAsBytes();
       } else {
-        final docId = int.tryParse(idStr.trim());
+        final docId = int.tryParse(idStr);
         if (docId == null || docId <= 0) {
           if (mounted) {
-            Toastbar.showErrorToastbar('No file to download', context);
+            Toastbar.showErrorToastbar('Invalid image id', context);
           }
           return;
         }
@@ -559,51 +644,79 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       if (!mounted) return;
       if (bytes == null || bytes.isEmpty) {
         Toastbar.showErrorToastbar(
-          'Could not download file (offline or unavailable)',
+          'Could not load image (offline or unavailable)',
           context,
         );
         return;
       }
-
-      final path = await DocumentBytesSaveService.savePdfBytes(
-        bytes,
-        _suggestedDownloadPdfName(f),
+      final imageBytes = bytes;
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black87,
+        builder: (ctx) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(16),
+          child: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  child: Image.memory(
+                    imageBytes,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Center(
+                        child: Icon(
+                          Icons.broken_image,
+                          color: Colors.white,
+                          size: 48,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
-      if (!mounted) return;
-
-      if (path != null) {
-        final inPublicDownloads = path.contains('/Download') &&
-            !path.contains('/Android/data/');
-        Toastbar.showSuccessToastbar(
-          inPublicDownloads
-              ? 'PDF saved to Downloads folder'
-              : 'PDF saved to app storage. Open Files to find it.',
-          context,
-        );
-      } else {
-        Toastbar.showErrorToastbar('Could not save file to device', context);
-      }
     } catch (e) {
       if (mounted) {
-        Toastbar.showErrorToastbar('Save failed: $e', context);
+        Toastbar.showErrorToastbar('Failed to open image: $e', context);
       }
     } finally {
       LoaderWidget.hideLoader();
     }
   }
 
-  bool _hasPmisVideoAttachmentForPlay(PmisTicketFieldValue f) {
-    if (_normDataType(f) != 'VIDEO') return false;
-    final id = _primaryAttachmentServerIdForUi(f);
-    if (id == null || id.isEmpty) return false;
-    if (id.contains('LOCAL_IMAGE_ID')) return true;
-    final n = int.tryParse(id.trim());
-    return n != null && n > 0;
+  Future<void> _playLocalVideoFile(File file) async {
+    if (!await file.exists()) {
+      if (mounted) {
+        Toastbar.showErrorToastbar('Video file not found', context);
+      }
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => ActivityTicketVideoPreviewDialog(videoFile: file),
+    );
   }
 
-  Future<void> _showServerVideoPopup(PmisTicketFieldValue f) async {
-    final idStr = _primaryAttachmentServerIdForUi(f);
-    if (idStr == null || idStr.trim().isEmpty) {
+  Future<void> _showServerVideoPopup(
+    PmisTicketFieldValue f, {
+    String? attachmentId,
+  }) async {
+    final idStr = (attachmentId ?? _primaryAttachmentServerIdForUi(f))?.trim();
+    if (idStr == null || idStr.isEmpty) {
       if (mounted) {
         Toastbar.showErrorToastbar('No video to play', context);
       }
@@ -613,9 +726,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     if (!mounted) return;
     LoaderWidget.showLoader(context);
     try {
-      File? file = await _localFileFromUniqueId(idStr.trim());
+      File? file = await _localFileFromUniqueId(idStr);
       if (file == null) {
-        final docId = int.tryParse(idStr.trim());
+        final docId = int.tryParse(idStr);
         if (docId == null || docId <= 0) {
           if (mounted) {
             Toastbar.showErrorToastbar('No video to play', context);
@@ -708,13 +821,18 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return type == 'IMAGE' || type == 'PDF' || type == 'VIDEO';
   }
 
-  /// IMAGE / Upload / Camera rows are single-file in the UI.
+  /// Reads [configJson.allowMultipleFiles] (bool or string).
+  bool _allowsMultipleFiles(PmisTicketFieldValue f) {
+    final raw = _configMap(f)['allowMultipleFiles'];
+    if (raw is bool) return raw;
+    if (raw == null) return false;
+    final s = raw.toString().trim().toLowerCase();
+    return s == 'true' || s == '1' || s == 'yes';
+  }
+
+  /// Single-file unless [configJson.allowMultipleFiles] is true.
   bool _isSingleFileUploadField(PmisTicketFieldValue f) {
-    final type = _normDataType(f);
-    if (type == 'IMAGE') return true;
-    if (type == 'PDF' || type == 'VIDEO') return true;
-    final allowMulti = _configMap(f)['allowMultipleFiles'];
-    return allowMulti != true;
+    return !_allowsMultipleFiles(f);
   }
 
   static int _taIdFromMap(Map<String, dynamic> a) {
@@ -747,6 +865,76 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return [for (final id in order) byId[id]!];
   }
 
+  /// Ids listed in [PmisTicketFieldValue.valText] (comma-separated).
+  static List<String> _idsFromValText(PmisTicketFieldValue f) {
+    final raw = (f.valText?.toString() ?? '').trim();
+    if (raw.isEmpty) return const <String>[];
+    final out = <String>[];
+    final seen = <String>{};
+    for (final part in raw.split(',')) {
+      final id = part.trim();
+      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      if (!seen.add(id)) continue;
+      out.add(id);
+    }
+    return out;
+  }
+
+  /// Multi-file GET often returns every id in [valText] but only one row in
+  /// [attachments]. Build a full list so the UI / next POST keep all videos.
+  List<Map<String, dynamic>> _hydrateAttachmentsForField(
+    PmisTicketFieldValue f, {
+    List<Map<String, dynamic>>? source,
+  }) {
+    final fromApi = _dedupeAttachmentsByAttachmentId(
+      source ??
+          f.attachments.map((m) => Map<String, dynamic>.from(m)).toList(),
+    );
+    if (_isSingleFileUploadField(f)) {
+      return _normalizedLiveAttachmentsForField(f, source: fromApi);
+    }
+
+    final byId = <String, Map<String, dynamic>>{};
+    for (final a in fromApi) {
+      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+      if (id.isEmpty) continue;
+      byId[id] = Map<String, dynamic>.from(a);
+    }
+
+    final type = _normDataType(f);
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    void addId(String id) {
+      if (id.isEmpty || !seen.add(id)) return;
+      final existing = byId[id];
+      if (existing != null) {
+        out.add(existing);
+        return;
+      }
+      out.add(<String, dynamic>{
+        'fileType': type,
+        'latitude': 0,
+        'longitude': 0,
+        'geoAccuracyM': 0,
+        'geoSource': '',
+        'capturedDt': '',
+        'taggedMmId': null,
+        'attachmentId': int.tryParse(id) ?? id,
+        'isActive': true,
+        'remarks': '',
+      });
+    }
+
+    for (final id in _idsFromValText(f)) {
+      addId(id);
+    }
+    for (final a in fromApi) {
+      addId((_rawAttachmentIdFromMap(a) ?? '').trim());
+    }
+    return out;
+  }
+
   /// Normalize live attachments for a field: active rows only, dedupe, and for
   /// single-file fields keep only the id that matches [valText] (else newest).
   List<Map<String, dynamic>> _normalizedLiveAttachmentsForField(
@@ -762,11 +950,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     );
     if (list.isEmpty || !_isSingleFileUploadField(f)) return list;
 
-    final preferred = (f.valText?.toString() ?? '')
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty && e != '0')
-        .toList();
+    final preferred = _idsFromValText(f);
     if (preferred.isNotEmpty) {
       final want = preferred.last;
       Map<String, dynamic>? matched;
@@ -1092,7 +1276,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       if (_isUploadType(type)) {
         _filesByTfv[f.tfvId] = [];
         _uploadedAttachmentsByTfv[f.tfvId] =
-            _normalizedLiveAttachmentsForField(f, source: f.attachments);
+            _hydrateAttachmentsForField(f, source: f.attachments);
       }
     }
 
@@ -1103,9 +1287,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         if (type == 'IMAGE') {
           _loadExistingActivityTicketImage(f);
         } else if (type == 'VIDEO' || type == 'PDF') {
-          _prefetchUploadFieldFromServerIfNeeded(f);
+          if (_allowsMultipleFiles(f)) {
+            _filesByTfv[f.tfvId]?.clear();
+          } else {
+            _prefetchUploadFieldFromServerIfNeeded(f);
+          }
         }
       }
+      if (mounted) setState(() {});
     });
   }
 
@@ -1552,8 +1741,11 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     });
   }
 
-  /// One file per row; new pick replaces the previous (PDF, video).
-  Widget _buildSingleTicketFileUpload({
+  /// Upload widget for PDF / VIDEO / multi-IMAGE.
+  /// Attachment rows always use the same tile list (local or server), whether
+  /// [allowMultipleFiles] is true or false. The upload box stays empty for pick
+  /// / replace; single-file mode still replaces on a new pick.
+  Widget _buildTicketFileUpload({
     required PmisTicketFieldValue f,
     required String label,
     required bool req,
@@ -1563,28 +1755,23 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     String? placeholder,
     bool useVideoPicker = false,
     bool useVideoRecorder = false,
+    bool useImagePicker = false,
+    bool useImageCamera = false,
   }) {
+    final allowMultiple = _allowsMultipleFiles(f);
     final files = _filesByTfv[f.tfvId]!;
-    final prim = _primaryAttachmentMapForUi(f);
-    final serverIdStr = _primaryAttachmentServerIdForUi(f);
-    final hasLocal = files.isNotEmpty;
-    dynamic serverIdForUi;
-    String? serverNameForUi;
-    if (!hasLocal && serverIdStr != null && serverIdStr.isNotEmpty) {
-      serverIdForUi = int.tryParse(serverIdStr) ?? serverIdStr;
-      serverNameForUi = prim != null
-          ? _attachmentDisplayName(prim, 'file_$serverIdStr')
-          : 'file_$serverIdStr';
-    }
+    final attachments =
+        _uploadedAttachmentsByTfv[f.tfvId] ?? <Map<String, dynamic>>[];
+    final isVideo = fileTypeForAttachment == 'VIDEO';
 
-    return CustomFileUploadNew(
+    final uploadWidget = CustomFileUploadNew(
       key: ValueKey<Object>(
         'at_file_${f.tfvId}_$fileTypeForAttachment'
-        '_${files.length}_${_uploadedAttachmentsByTfv[f.tfvId]?.length ?? 0}'
-        '_srv_${serverIdStr ?? 'n'}',
+        '_${attachments.length}_multi_$allowMultiple',
       ),
       label: label,
-      placeholder: placeholder ?? 'Upload a File',
+      placeholder: placeholder ??
+          (allowMultiple ? 'Add file' : 'Upload a File'),
       isRequired: req && _canEditTicketFields,
       isDisabled: !_canEditTicketFields,
       acceptedFileTypes: acceptedFileTypes,
@@ -1592,23 +1779,27 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       pickAllowedExtensions: pickAllowedExtensions,
       useVideoPicker: useVideoPicker,
       useVideoRecorder: useVideoRecorder,
-      selectedFile: files.isNotEmpty ? files.first : null,
+      useImagePicker: useImagePicker,
+      useImageCamera: useImageCamera,
+      allowMultipleFiles: allowMultiple,
+      // Always keep the box clear — tiles below list every attachment.
+      selectedFile: null,
       uploadedFiles: const [],
-      serverAttachmentName: serverNameForUi,
-      serverAttachmentId: serverIdForUi,
-      onServerAttachmentClicked: serverIdForUi != null
-          ? (id) => _openServerAttachmentFromDocument(id, f)
-          : null,
+      serverAttachmentName: null,
+      serverAttachmentId: null,
       onFileSelected: (file) async {
         if (!_canEditTicketFields) return;
-        final attachments =
+        final liveAttachments =
             _uploadedAttachmentsByTfv[f.tfvId] ?? <Map<String, dynamic>>[];
         if (file == null) {
           setState(() {
             files.clear();
-            attachments.clear();
-            _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+            liveAttachments.clear();
+            _uploadedAttachmentsByTfv[f.tfvId] = liveAttachments;
             _uploadReplacedTfvIds.add(f.tfvId);
+            if (fileTypeForAttachment == 'IMAGE') {
+              _imageExternalDataByTfv[f.tfvId] = null;
+            }
           });
           return;
         }
@@ -1623,12 +1814,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           return;
         }
 
-        // Show the picked file name immediately (do not wait for upload / GPS).
         if (!mounted) return;
         setState(() {
-          files
-            ..clear()
-            ..add(file);
+          if (allowMultiple) {
+            files.add(file);
+          } else {
+            files
+              ..clear()
+              ..add(file);
+          }
         });
 
         LoaderWidget.showLoader(context);
@@ -1641,36 +1835,204 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
               context,
             );
             setState(() {
-              files.clear();
-              attachments.clear();
-              _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+              files.remove(file);
+              if (!allowMultiple) {
+                liveAttachments.clear();
+                _uploadedAttachmentsByTfv[f.tfvId] = liveAttachments;
+              }
             });
             return;
           }
-          // Build attachment (includes location) before hiding loader so the UI
-          // does not sit in an intermediate state after the overlay dismisses.
           final attachment = await _buildAttachmentObject(
             uploadedId,
             fileTypeForAttachment,
           );
+          attachment['_localPath'] = file.path;
           if (!mounted) return;
           setState(() {
-            attachments
-              ..clear()
-              ..add(attachment);
-            _uploadedAttachmentsByTfv[f.tfvId] = attachments;
+            if (allowMultiple) {
+              liveAttachments.add(attachment);
+            } else {
+              liveAttachments
+                ..clear()
+                ..add(attachment);
+            }
+            _uploadedAttachmentsByTfv[f.tfvId] = liveAttachments;
             _uploadReplacedTfvIds.add(f.tfvId);
+            if (fileTypeForAttachment == 'IMAGE') {
+              _imageExternalDataByTfv[f.tfvId] = file.path;
+            }
           });
         } finally {
           LoaderWidget.hideLoader();
         }
       },
-      onFileDeleted: (_) {
-        setState(() {
-          files.clear();
-          _uploadedAttachmentsByTfv[f.tfvId] = <Map<String, dynamic>>[];
-        });
-      },
+      onFileDeleted: (_) {},
+    );
+
+    final rows = <Widget>[];
+    final seenIds = <String>{};
+    final isImage = fileTypeForAttachment == 'IMAGE';
+
+    for (final a in attachments) {
+      if (a['isActive'] == false) continue;
+
+      final localPath = a['_localPath']?.toString();
+      if (localPath != null && localPath.isNotEmpty) {
+        rows.add(
+          _buildAttachmentTile(
+            isVideo: isVideo,
+            isImage: isImage,
+            title: p.basename(localPath),
+            onOpen: () async {
+              if (isVideo) {
+                await _playLocalVideoFile(File(localPath));
+              } else if (isImage) {
+                await _previewLocalImageFile(File(localPath));
+              } else {
+                await OpenFile.open(localPath);
+              }
+            },
+            onDelete: () {
+              setState(() {
+                files.removeWhere((e) => e.path == localPath);
+                final live = _uploadedAttachmentsByTfv[f.tfvId] ??
+                    <Map<String, dynamic>>[];
+                live.removeWhere(
+                  (e) => e['_localPath']?.toString() == localPath,
+                );
+                _uploadedAttachmentsByTfv[f.tfvId] = live;
+                _uploadReplacedTfvIds.add(f.tfvId);
+                if (fileTypeForAttachment == 'IMAGE') {
+                  _imageExternalDataByTfv[f.tfvId] = null;
+                }
+              });
+            },
+          ),
+        );
+        continue;
+      }
+
+      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      if (!seenIds.add(id)) continue;
+      rows.add(
+        _buildAttachmentTile(
+          isVideo: isVideo,
+          isImage: isImage,
+          title: _serverAttachmentLabel(f, a, id),
+          onOpen: () => _openServerAttachmentFromDocument(
+            int.tryParse(id) ?? id,
+            f,
+          ),
+          onDelete: () {
+            setState(() {
+              final live = _uploadedAttachmentsByTfv[f.tfvId] ??
+                  <Map<String, dynamic>>[];
+              live.removeWhere(
+                (e) => (_rawAttachmentIdFromMap(e) ?? '').trim() == id,
+              );
+              _uploadedAttachmentsByTfv[f.tfvId] = live;
+              _uploadReplacedTfvIds.add(f.tfvId);
+              if (fileTypeForAttachment == 'IMAGE') {
+                _imageExternalDataByTfv[f.tfvId] = null;
+              }
+            });
+          },
+        ),
+      );
+    }
+
+    if (rows.isEmpty) return uploadWidget;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        uploadWidget,
+        const SizedBox(height: 8),
+        ...rows,
+      ],
+    );
+  }
+
+  /// Shared white tile used for every video / PDF / multi-image attachment.
+  Widget _buildAttachmentTile({
+    required bool isVideo,
+    bool isImage = false,
+    required String title,
+    required VoidCallback? onOpen,
+    required VoidCallback onDelete,
+  }) {
+    final IconData leadingIcon;
+    if (isVideo) {
+      leadingIcon = Icons.play_circle_outline;
+    } else if (isImage) {
+      leadingIcon = Icons.image_outlined;
+    } else {
+      leadingIcon = Icons.attach_file;
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        child: ListTile(
+          dense: true,
+          leading: Icon(
+            leadingIcon,
+            color: AppColors.color555555,
+          ),
+          title: Text(
+            title,
+            style: TextStyle(
+              fontSize: 13,
+              color: onOpen != null
+                  ? AppColors.textBlueAccent
+                  : AppColors.color555555,
+              decoration:
+                  onOpen != null ? TextDecoration.underline : TextDecoration.none,
+              fontFamily: fontFamilyMontserrat,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: _canEditTicketFields
+              ? IconButton(
+                  icon: Icon(Icons.delete_outline, color: Colors.red.shade400),
+                  onPressed: onDelete,
+                )
+              : null,
+          onTap: onOpen,
+        ),
+      ),
+    );
+  }
+
+  /// Backward-compatible alias used by older call sites.
+  Widget _buildSingleTicketFileUpload({
+    required PmisTicketFieldValue f,
+    required String label,
+    required bool req,
+    required String fileTypeForAttachment,
+    required String acceptedFileTypes,
+    List<String>? pickAllowedExtensions,
+    String? placeholder,
+    bool useVideoPicker = false,
+    bool useVideoRecorder = false,
+    bool useImagePicker = false,
+    bool useImageCamera = false,
+  }) {
+    return _buildTicketFileUpload(
+      f: f,
+      label: label,
+      req: req,
+      fileTypeForAttachment: fileTypeForAttachment,
+      acceptedFileTypes: acceptedFileTypes,
+      pickAllowedExtensions: pickAllowedExtensions,
+      placeholder: placeholder,
+      useVideoPicker: useVideoPicker,
+      useVideoRecorder: useVideoRecorder,
+      useImagePicker: useImagePicker,
+      useImageCamera: useImageCamera,
     );
   }
 
@@ -1686,23 +2048,31 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return '$lat, $lng';
     }
     if (_isUploadType(type)) {
-      // Unchanged upload: keep the server's valText so we don't rewrite the field.
+      // Unchanged upload: keep every known id (valText ∪ attachments).
       if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
-        final apiPrimary = _normalizedLiveAttachmentsForField(
-          f,
-          source: f.attachments,
-        );
-        if (apiPrimary.isNotEmpty) {
-          return (_rawAttachmentIdFromMap(apiPrimary.first) ?? '').trim();
+        if (_isSingleFileUploadField(f)) {
+          final apiPrimary = _normalizedLiveAttachmentsForField(
+            f,
+            source: f.attachments,
+          );
+          if (apiPrimary.isNotEmpty) {
+            return (_rawAttachmentIdFromMap(apiPrimary.first) ?? '').trim();
+          }
+          final parts = _idsFromValText(f);
+          return parts.isEmpty ? '' : parts.last;
         }
-        final raw = (f.valText?.toString() ?? '').trim();
-        if (raw.isEmpty) return '';
-        final parts = raw
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty && e != '0')
-            .toList();
-        return parts.isEmpty ? '' : parts.last;
+        final ids = <String>[];
+        final seen = <String>{};
+        for (final id in _idsFromValText(f)) {
+          if (seen.add(id)) ids.add(id);
+        }
+        final hydrated = _hydrateAttachmentsForField(f);
+        for (final a in hydrated) {
+          final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+          if (id.isEmpty || id == '0' || !seen.add(id)) continue;
+          ids.add(id);
+        }
+        return ids.join(',');
       }
 
       final attachments = _normalizedLiveAttachmentsForField(f);
@@ -1865,9 +2235,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       // Preserve nullable bounds. Null means "no min/max validation".
       'minVal': f.minVal,
       'maxVal': f.maxVal,
-      'configJson': (f.configJson is Map)
-          ? Map<String, dynamic>.from(f.configJson as Map)
-          : {},
+      'configJson': _configMap(f),
       'linkMmId': f.linkMmId ?? 0,
       'isModified': isModified,
     };
@@ -1882,9 +2250,28 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
     }
 
-    // No new file this session → do not touch attachments (API inserts if resent).
+    // No new file this session → echo existing rows (not []). Some backends
+    // replace the attachments collection whenever the ticket is posted, so an
+    // empty array would wipe previously uploaded videos/PDFs/images.
     if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
-      return const <Map<String, dynamic>>[];
+      final live = _uploadedAttachmentsByTfv[f.tfvId];
+      final source = (live != null && live.isNotEmpty)
+          ? live
+          : _hydrateAttachmentsForField(f, source: f.attachments);
+      final out = <Map<String, dynamic>>[];
+      final seen = <String>{};
+      for (final a in source) {
+        if (a['isActive'] == false) continue;
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+        if (!seen.add(id)) continue;
+        final copy = Map<String, dynamic>.from(a);
+        copy.remove('_localPath');
+        // Explicitly not a mutation — avoids duplicate inserts on plain submit.
+        copy['isModified'] = false;
+        out.add(copy);
+      }
+      return out;
     }
 
     var ids = valText
@@ -1901,6 +2288,71 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       ids = [ids.last];
     }
 
+    // ---- Multi-file: keep remaining, insert new, soft-delete removed ----
+    if (!_isSingleFileUploadField(f)) {
+      final out = <Map<String, dynamic>>[];
+      final currentIdSet = ids.toSet();
+      final alreadyOnServer = <String>{..._idsFromValText(f)};
+      for (final a in f.attachments) {
+        if (a['isActive'] == false) continue;
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        if (id.isEmpty || id == '0') continue;
+        alreadyOnServer.add(id);
+      }
+
+      // Soft-delete originals that the user removed.
+      final seenTa = <int>{};
+      for (final a in f.attachments) {
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        final t = _taIdFromMap(a);
+        if (t <= 0 || !seenTa.add(t)) continue;
+        if (id.isNotEmpty && currentIdSet.contains(id)) continue;
+        final stale = Map<String, dynamic>.from(a);
+        stale['isActive'] = false;
+        stale['isModified'] = true;
+        out.add(stale);
+      }
+
+      final live = _normalizedLiveAttachmentsForField(f);
+      final liveById = <String, Map<String, dynamic>>{};
+      for (final a in live) {
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        if (id.isEmpty || id == '0') continue;
+        liveById[id] = Map<String, dynamic>.from(a);
+      }
+
+      for (final id in ids) {
+        if (alreadyOnServer.contains(id)) {
+          // Already stored on the ticket — do not resend (avoids duplicate insert).
+          continue;
+        }
+        final liveRow = liveById[id];
+        final row = liveRow ??
+            <String, dynamic>{
+              'fileType': type,
+              'latitude': 0,
+              'longitude': 0,
+              'geoAccuracyM': 0,
+              'geoSource': 'MOBILE',
+              'capturedDt': _nowForBackend(),
+              'taggedMmId': null,
+              'attachmentId': int.tryParse(id) ?? id,
+              'isActive': true,
+              'remarks': '',
+            };
+        row['attachmentId'] = int.tryParse(id) ?? id;
+        row['fileType'] = row['fileType'] ?? type;
+        row['isActive'] = true;
+        row['isModified'] = true;
+        row['capturedDt'] = _nowForBackend();
+        row.remove('taId'); // new insert
+        row.remove('_localPath');
+        out.add(row);
+      }
+      return out;
+    }
+
+    // ---- Single-file replace (existing behavior) ----
     final keepTaId = _canonicalTaIdForField(f);
     final out = <Map<String, dynamic>>[];
     final seenTa = <int>{};
@@ -2178,6 +2630,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
 
   Map<String, dynamic> _normalizeAttachmentDate(Map<String, dynamic> attachment) {
     final normalized = Map<String, dynamic>.from(attachment);
+    normalized.remove('_localPath');
     normalized['capturedDt'] = _normalizeDateString(
       normalized['capturedDt']?.toString(),
     );
@@ -2509,11 +2962,37 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           onChanged: (v) => setState(() => _dropdownByTfv[f.tfvId] = v),
         );
       case 'IMAGE':
-        // One [ImageUploadField] per row (same as PM): ignore allowMultipleFiles.
+        final allowMultiple = _allowsMultipleFiles(f);
+        final pickFromGallery = _normControlType(f) == 'UPLOAD';
+        if (allowMultiple) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTicketFileUpload(
+                f: f,
+                label: label,
+                req: req,
+                fileTypeForAttachment: 'IMAGE',
+                acceptedFileTypes: '(Images)',
+                pickAllowedExtensions: const [
+                  'jpg',
+                  'jpeg',
+                  'png',
+                  'gif',
+                  'webp',
+                  'bmp',
+                ],
+                useImagePicker: pickFromGallery,
+                useImageCamera: !pickFromGallery,
+                placeholder: 'Add image',
+              ),
+              _offlineSavedIndicator(f),
+            ],
+          );
+        }
         final ext = _imageExternalDataByTfv[f.tfvId];
         final loadingServer =
             _imageLoadingFromServerTfvIds.contains(f.tfvId);
-        final pickFromGallery = _normControlType(f) == 'UPLOAD';
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2536,88 +3015,48 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           ],
         );
       case 'PDF':
-        // Same UX for every PDF row: document picker (PDF only), one file, replace on re-pick.
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildSingleTicketFileUpload(
+            _buildTicketFileUpload(
               f: f,
               label: label,
               req: req,
               fileTypeForAttachment: 'PDF',
-              acceptedFileTypes: '(PDF only)',
+              acceptedFileTypes: _allowsMultipleFiles(f)
+                  ? '(PDF — multiple allowed)'
+                  : '(PDF only)',
               pickAllowedExtensions: const ['pdf'],
-              placeholder: 'Add PDF',
+              placeholder: _allowsMultipleFiles(f) ? 'Add PDF' : 'Add PDF',
             ),
-            if (_hasPmisPdfAttachmentForDownload(f)) ...[
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => _downloadPdfAttachmentToDevice(f),
-                  icon: const Icon(
-                    Icons.download_outlined,
-                    color: AppColors.white,
-                    size: 22,
-                  ),
-                  label: const Text(
-                    'Download file',
-                    style: TextStyle(
-                      color: AppColors.white,
-                      fontFamily: poppins,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-              ),
-            ],
             _offlineSavedIndicator(f),
           ],
         );
       case 'VIDEO':
         final useVideoRecorder = _isVideoRecorderControl(f);
-        // Upload → gallery video picker; VideoRecorder → device camera video.
+        final allowMultiple = _allowsMultipleFiles(f);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildSingleTicketFileUpload(
+            _buildTicketFileUpload(
               f: f,
               label: label,
               req: req,
               fileTypeForAttachment: 'VIDEO',
               acceptedFileTypes: useVideoRecorder
-                  ? '(Record video)'
-                  : '(Video only)',
+                  ? (allowMultiple
+                      ? '(Record videos — multiple allowed)'
+                      : '(Record video)')
+                  : (allowMultiple
+                      ? '(Videos — multiple allowed)'
+                      : '(Video only)'),
               pickAllowedExtensions: null,
               useVideoPicker: !useVideoRecorder,
               useVideoRecorder: useVideoRecorder,
-              placeholder:
-                  useVideoRecorder ? 'Record video' : 'Add video',
+              placeholder: useVideoRecorder
+                  ? (allowMultiple ? 'Record video' : 'Record video')
+                  : (allowMultiple ? 'Add video' : 'Add video'),
             ),
-            if (_hasPmisVideoAttachmentForPlay(f)) ...[
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => _showServerVideoPopup(f),
-                  icon: const Icon(
-                    Icons.play_circle_outline,
-                    color: AppColors.white,
-                    size: 22,
-                  ),
-                  label: const Text(
-                    'Show Video',
-                    style: TextStyle(
-                      color: AppColors.white,
-                      fontFamily: poppins,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-              ),
-            ],
             _offlineSavedIndicator(f),
           ],
         );

@@ -199,6 +199,11 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
       }
     }
     _repetitionDate = widget.initialRepetitionDate;
+    // Drop stale repetition dates that are today or earlier.
+    if (_repetitionDate != null &&
+        !_isRepetitionDateAfterToday(_repetitionDate)) {
+      _repetitionDate = null;
+    }
     _remarksController.text = widget.initialRemarks ?? '';
   }
 
@@ -208,15 +213,33 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
     super.dispose();
   }
 
+  /// Calendar day only (ignore time) for comparison.
+  DateTime _dateOnly(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  /// Earliest allowed repetition date: tomorrow (today is disabled).
+  DateTime get _minRepetitionDate {
+    final today = _dateOnly(DateTime.now());
+    return today.add(const Duration(days: 1));
+  }
+
+  bool _isRepetitionDateAfterToday(DateTime? value) {
+    if (value == null) return false;
+    return _dateOnly(value).isAfter(_dateOnly(DateTime.now()));
+  }
+
   Future<void> _pickDate() async {
     if (!_repetitionDateEnabled(_selectedStatus?.statusCode)) return;
-    final now = DateTime.now();
-    final initial = _repetitionDate ?? now;
+    final firstAllowed = _minRepetitionDate;
+    var initial = _repetitionDate ?? firstAllowed;
+    if (initial.isBefore(firstAllowed)) initial = firstAllowed;
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
-      firstDate: now.subtract(const Duration(days: 3650)),
-      lastDate: now.add(const Duration(days: 3650)),
+      firstDate: firstAllowed,
+      lastDate: firstAllowed.add(const Duration(days: 3650)),
+      selectableDayPredicate: (day) =>
+          !_dateOnly(day).isBefore(firstAllowed),
     );
     if (picked == null) return;
     setState(() {
@@ -253,6 +276,11 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
     }
     final isValid = _formKey.currentState?.validate() ?? false;
     if (!isValid) return;
+    if (_repetitionDateRequired(statusForSave.statusCode) &&
+        !_isRepetitionDateAfterToday(_repetitionDate)) {
+      setState(() {});
+      return;
+    }
     // Match showDialog(useRootNavigator: true) so we only dismiss this dialog.
     Navigator.of(context, rootNavigator: true).pop(
       ActivityTicketClosePopupResult(
@@ -285,7 +313,7 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _label('Activity Status', required: _statusRequired),
+                _label('Activity Status', required: true),
                 const SizedBox(height: 8),
                 CustomDropdown(
                   items: _statusOptions.map((e) => e.statusName).toList(),
@@ -321,8 +349,8 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
                 if (_repetitionDateEnabled(_selectedStatus?.statusCode)) ...[
                   const SizedBox(height: 8),
                   _helper(
-                    'Activity Repetition Date is required for '
-                    'Completed - To Be Repeated.',
+                    'Activity Repetition Date is required and must be '
+                    'after today for Completed - To Be Repeated.',
                   ),
                   const SizedBox(height: 12),
                   _label(
@@ -361,6 +389,19 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
                       padding: EdgeInsets.only(top: 6),
                       child: Text(
                         'Please select repetition date',
+                        style: TextStyle(
+                          color: AppColors.errorColor,
+                          fontSize: 12,
+                        ),
+                      ),
+                    )
+                  else if (_repetitionDateRequired(_selectedStatus?.statusCode) &&
+                      _repetitionDate != null &&
+                      !_isRepetitionDateAfterToday(_repetitionDate))
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'Repetition date must be after today',
                         style: TextStyle(
                           color: AppColors.errorColor,
                           fontSize: 12,
@@ -411,7 +452,10 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
                       child: ElevatedButton(
                         onPressed: () {
                           if (_repetitionDateRequired(_selectedStatus?.statusCode) &&
-                              _repetitionDate == null) {
+                              (_repetitionDate == null ||
+                                  !_isRepetitionDateAfterToday(
+                                    _repetitionDate,
+                                  ))) {
                             setState(() {});
                             return;
                           }
