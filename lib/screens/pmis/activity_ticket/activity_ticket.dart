@@ -65,12 +65,19 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   final Set<int> _imageLoadingFromServerTfvIds = {};
   /// tfvIds where the user picked a new file this session (real replace).
   final Set<int> _uploadReplacedTfvIds = {};
+
+  /// Upload edits while viewing historic [oldData] (oldData index → current tfvIds).
+  final Map<int, Set<int>> _historicUploadReplacedByOldIndex = {};
+
+  /// Field snapshots for historic days edited by Checker / Ticket Manager.
+  final Map<int, _AtFieldSnapshot> _historicEditsByIndex = {};
+
   late List<PmisTicketFieldValue> _sortedFields;
   /// Prevents overlapping GPS taps and disables the button while resolving.
   int? _capturingGpsTfvId;
 
-  /// `-1` = today / editable [PmisActivityTicketDetail.ticketFieldValues];
-  /// `>= 0` = index into [PmisActivityTicketDetail.oldData] (read-only).
+  /// `-1` = today / [PmisActivityTicketDetail.ticketFieldValues];
+  /// `>= 0` = index into [PmisActivityTicketDetail.oldData].
   int _historicPickerIndex = -1;
 
   /// Stashes edits on the live ticket when opening a historic snapshot.
@@ -1086,11 +1093,33 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
 
   bool get _isTicketManagerRole => _normalizedRole == 'TICKET_MANAGER';
 
-  /// Checker / ticket-manager can edit fields; only maker+completed is read-only.
+  /// Maker: edit current day only (view previous).
+  /// Checker / Ticket Manager: edit current and previous day data.
   bool get _canEditTicketFields {
     if (!_hasAssignedRole) return false;
+    if (!_isViewingEditableTicket) {
+      return _isCheckerRole;
+    }
     if (_isCheckerRole) return true;
     return !_isMakerCompletedReadOnly;
+  }
+
+  void _markUploadReplaced(int tfvId) {
+    if (_historicPickerIndex >= 0) {
+      _historicUploadReplacedByOldIndex
+          .putIfAbsent(_historicPickerIndex, () => <int>{})
+          .add(tfvId);
+      return;
+    }
+    _uploadReplacedTfvIds.add(tfvId);
+  }
+
+  bool _isUploadReplacedForField(int tfvId, {int? historicIndex}) {
+    final idx = historicIndex ?? _historicPickerIndex;
+    if (idx >= 0) {
+      return _historicUploadReplacedByOldIndex[idx]?.contains(tfvId) ?? false;
+    }
+    return _uploadReplacedTfvIds.contains(tfvId);
   }
 
   /// Roles that can run checker-style review submission (when that popup is used).
@@ -1148,26 +1177,18 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }
 
   List<int> _orderedOldDataIndices() {
-    final currentTfvIds = widget.detail.ticketFieldValues
-        .map((f) => f.tfvId)
-        .toSet();
     final entries = List.generate(
       widget.detail.oldData.length,
       (i) => MapEntry(i, widget.detail.oldData[i]),
     ).where((entry) {
       final item = entry.value;
       if (item.ticketFieldValues.isEmpty) return false;
-
-      final hasKnownField = item.ticketFieldValues.any(
-        (f) => currentTfvIds.contains(f.tfvId),
-      );
-      if (!hasKnownField) return false;
-
-      final hasMeaningfulData = item.ticketFieldValues.any((f) {
+      // After Completed–To Be Repeated, old rows get new tfvIds. Do not require
+      // id overlap with the current ticket — match by meaningful values only.
+      return item.ticketFieldValues.any((f) {
         final valText = f.valText?.toString().trim() ?? '';
         return valText.isNotEmpty || f.attachments.isNotEmpty;
       });
-      return hasMeaningfulData;
     }).toList();
     entries.sort((a, b) {
       final da = _tryParseFlexibleTicketDate(a.value.actualStartDt);
@@ -1178,6 +1199,82 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return db.compareTo(da);
     });
     return entries.map((e) => e.key).toList();
+  }
+
+  /// Match an old historic field to a current field (tfvId → name+seq → name → seq).
+  PmisTicketFieldValue? _matchOldFieldToCurrent(
+    PmisTicketFieldValue current,
+    List<PmisTicketFieldValue> oldFields,
+  ) {
+    for (final o in oldFields) {
+      if (o.tfvId == current.tfvId) return o;
+    }
+    final curName = (current.subActivityName ?? '').trim().toLowerCase();
+    if (current.seqNo != null && curName.isNotEmpty) {
+      for (final o in oldFields) {
+        if (o.seqNo != current.seqNo) continue;
+        if ((o.subActivityName ?? '').trim().toLowerCase() == curName) {
+          return o;
+        }
+      }
+    }
+    if (curName.isNotEmpty) {
+      for (final o in oldFields) {
+        if ((o.subActivityName ?? '').trim().toLowerCase() == curName) {
+          return o;
+        }
+      }
+    }
+    if (current.seqNo != null) {
+      for (final o in oldFields) {
+        if (o.seqNo == current.seqNo) return o;
+      }
+    }
+    return null;
+  }
+
+  /// Keep current field structure/config; overlay values from one [oldData] row.
+  List<PmisTicketFieldValue> _overlayCurrentFieldsWithOldData(
+    PmisOldDataItem old,
+  ) {
+    return [
+      for (final current in widget.detail.ticketFieldValues)
+        () {
+          final matched =
+              _matchOldFieldToCurrent(current, old.ticketFieldValues);
+          if (matched == null) return current;
+          return PmisTicketFieldValue(
+            tfvId: current.tfvId,
+            valText: matched.valText,
+            valNumeric: matched.valNumeric ?? current.valNumeric,
+            valInt: matched.valInt ?? current.valInt,
+            valDate: matched.valDate ?? current.valDate,
+            valJson: matched.valJson.isNotEmpty ? matched.valJson : current.valJson,
+            latitude: matched.latitude ?? current.latitude,
+            longitude: matched.longitude ?? current.longitude,
+            geoAccuracyM: matched.geoAccuracyM ?? current.geoAccuracyM,
+            geoSource: matched.geoSource ?? current.geoSource,
+            isActive: current.isActive,
+            remarks: matched.remarks ?? current.remarks,
+            attachments: matched.attachments.isNotEmpty
+                ? matched.attachments
+                    .map((m) => Map<String, dynamic>.from(m))
+                    .toList()
+                : current.attachments
+                    .map((m) => Map<String, dynamic>.from(m))
+                    .toList(),
+            subActivityName: current.subActivityName,
+            subActivityDataType: current.subActivityDataType,
+            subActivityControlType: current.subActivityControlType,
+            isRequired: current.isRequired,
+            seqNo: current.seqNo,
+            minVal: current.minVal,
+            maxVal: current.maxVal,
+            configJson: current.configJson,
+            linkMmId: current.linkMmId,
+          );
+        }(),
+    ];
   }
 
   String _historicRowLabel(PmisOldDataItem item, int ordinalInMenu) {
@@ -1306,6 +1403,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     if (prev < 0 && newIndex >= 0) {
       _draftWhenLeavingCurrent = _captureFieldSnapshot();
     }
+    if (prev >= 0 && _isCheckerRole) {
+      _historicEditsByIndex[prev] = _captureFieldSnapshot();
+    }
 
     setState(() {
       _historicPickerIndex = newIndex;
@@ -1317,7 +1417,13 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         }
         _draftWhenLeavingCurrent = null;
       } else {
-        _rebindFields(widget.detail.oldData[newIndex].ticketFieldValues);
+        _rebindFields(
+          _overlayCurrentFieldsWithOldData(widget.detail.oldData[newIndex]),
+        );
+        final priorEdits = _historicEditsByIndex[newIndex];
+        if (priorEdits != null) {
+          _applyFieldSnapshot(priorEdits);
+        }
       }
     });
   }
@@ -1344,7 +1450,10 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          "Choose a date to view that day's activities.",
+          _isCheckerRole
+              ? "Choose a date to view or edit that day's activities."
+              : "Choose a date to view that day's activities. "
+                  'Previous days are view-only for Maker.',
           style: TextStyle(
             color: AppColors.white.withValues(alpha: 0.95),
             fontSize: 14,
@@ -1718,7 +1827,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         list.clear();
         attachments.clear();
         _uploadedAttachmentsByTfv[f.tfvId] = attachments;
-        _uploadReplacedTfvIds.add(f.tfvId);
+        _markUploadReplaced(f.tfvId);
         _imageExternalDataByTfv[f.tfvId] = null;
         _imageLoadingFromServerTfvIds.remove(f.tfvId);
       });
@@ -1735,7 +1844,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         ..clear()
         ..add(attachment);
       _uploadedAttachmentsByTfv[f.tfvId] = attachments;
-      _uploadReplacedTfvIds.add(f.tfvId);
+      _markUploadReplaced(f.tfvId);
       _imageExternalDataByTfv[f.tfvId] = file.path;
       _imageLoadingFromServerTfvIds.remove(f.tfvId);
     });
@@ -1796,7 +1905,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
             files.clear();
             liveAttachments.clear();
             _uploadedAttachmentsByTfv[f.tfvId] = liveAttachments;
-            _uploadReplacedTfvIds.add(f.tfvId);
+            _markUploadReplaced(f.tfvId);
             if (fileTypeForAttachment == 'IMAGE') {
               _imageExternalDataByTfv[f.tfvId] = null;
             }
@@ -1858,7 +1967,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                 ..add(attachment);
             }
             _uploadedAttachmentsByTfv[f.tfvId] = liveAttachments;
-            _uploadReplacedTfvIds.add(f.tfvId);
+            _markUploadReplaced(f.tfvId);
             if (fileTypeForAttachment == 'IMAGE') {
               _imageExternalDataByTfv[f.tfvId] = file.path;
             }
@@ -1902,7 +2011,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                   (e) => e['_localPath']?.toString() == localPath,
                 );
                 _uploadedAttachmentsByTfv[f.tfvId] = live;
-                _uploadReplacedTfvIds.add(f.tfvId);
+                _markUploadReplaced(f.tfvId);
                 if (fileTypeForAttachment == 'IMAGE') {
                   _imageExternalDataByTfv[f.tfvId] = null;
                 }
@@ -1933,7 +2042,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                 (e) => (_rawAttachmentIdFromMap(e) ?? '').trim() == id,
               );
               _uploadedAttachmentsByTfv[f.tfvId] = live;
-              _uploadReplacedTfvIds.add(f.tfvId);
+              _markUploadReplaced(f.tfvId);
               if (fileTypeForAttachment == 'IMAGE') {
                 _imageExternalDataByTfv[f.tfvId] = null;
               }
@@ -2049,7 +2158,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     }
     if (_isUploadType(type)) {
       // Unchanged upload: keep every known id (valText ∪ attachments).
-      if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
+      if (!_isUploadReplacedForField(f.tfvId)) {
         if (_isSingleFileUploadField(f)) {
           final apiPrimary = _normalizedLiveAttachmentsForField(
             f,
@@ -2115,13 +2224,17 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     PmisTicketFieldValue original, {
     required String updatedValText,
     required List<Map<String, dynamic>> updatedAttachments,
+    int? historicIndex,
   }) {
     final type = _normDataType(original);
     if (_isUploadType(type)) {
       // Image/PDF/VIDEO: modified ONLY if the user picked/cleared a file this
       // session. Resending the same attachment object makes the API insert a
       // duplicate taId on every plain Submit.
-      return _uploadReplacedTfvIds.contains(original.tfvId);
+      return _isUploadReplacedForField(
+        original.tfvId,
+        historicIndex: historicIndex,
+      );
     }
     final oldVal = (original.valText?.toString() ?? '').trim();
     return oldVal != updatedValText.trim();
@@ -2253,7 +2366,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     // No new file this session → echo existing rows (not []). Some backends
     // replace the attachments collection whenever the ticket is posted, so an
     // empty array would wipe previously uploaded videos/PDFs/images.
-    if (!_uploadReplacedTfvIds.contains(f.tfvId)) {
+    if (!_isUploadReplacedForField(f.tfvId)) {
       final live = _uploadedAttachmentsByTfv[f.tfvId];
       final source = (live != null && live.isNotEmpty)
           ? live
@@ -2447,28 +2560,134 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return best;
   }
 
+  /// Current ticket field that corresponds to an historic [oldField].
+  PmisTicketFieldValue? _matchCurrentFieldForOld(PmisTicketFieldValue oldField) {
+    for (final current in widget.detail.ticketFieldValues) {
+      if (_matchOldFieldToCurrent(current, [oldField]) != null) {
+        return current;
+      }
+    }
+    return null;
+  }
+
+  String _valTextFromSnapshot(PmisTicketFieldValue f, _AtFieldSnapshot s) {
+    final type = _normDataType(f);
+    if (type == 'DROPDOWN') {
+      return (s.dropdownByTfv[f.tfvId] ?? '').trim();
+    }
+    if (_isCombinedCoordinatesField(f)) {
+      final lat = (s.textByTfv[f.tfvId] ?? '').trim();
+      final lng = (s.lngByTfv[f.tfvId] ?? '').trim();
+      if (lat.isEmpty && lng.isEmpty) return '';
+      return '$lat, $lng';
+    }
+    if (_isUploadType(type)) {
+      final attachments = s.uploadedAttachmentsByTfv[f.tfvId] ?? const [];
+      if (attachments.isEmpty) return '';
+      final ids = <String>[];
+      final seen = <String>{};
+      for (final a in attachments) {
+        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+        if (id.isEmpty || id == '0' || !seen.add(id)) continue;
+        ids.add(id);
+      }
+      if (_isSingleFileUploadField(f) && ids.length > 1) return ids.last;
+      return ids.join(',');
+    }
+    return (s.textByTfv[f.tfvId] ?? '').trim();
+  }
+
+  List<Map<String, dynamic>> _attachmentsFromSnapshot(
+    PmisTicketFieldValue f,
+    _AtFieldSnapshot s, {
+    required bool replaced,
+  }) {
+    if (!_isUploadType(_normDataType(f))) {
+      return f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
+    }
+    final live = s.uploadedAttachmentsByTfv[f.tfvId];
+    final source = (live != null && live.isNotEmpty)
+        ? live
+        : _hydrateAttachmentsForField(f, source: f.attachments);
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final a in source) {
+      if (a['isActive'] == false) continue;
+      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      if (!seen.add(id)) continue;
+      final copy = Map<String, dynamic>.from(a);
+      copy.remove('_localPath');
+      copy['isModified'] = replaced;
+      if (replaced) {
+        copy.remove('taId');
+        copy['capturedDt'] = _nowForBackend();
+      }
+      out.add(copy);
+    }
+    return out;
+  }
+
   Map<String, dynamic> _mapOldData(
     PmisOldDataItem item, {
-    required Set<int> modifiedFieldIds,
+    _AtFieldSnapshot? edits,
+    Set<int> uploadReplacedCurrentTfvIds = const <int>{},
   }) {
-    final hasModifiedField = item.ticketFieldValues.any(
-      (f) => modifiedFieldIds.contains(f.tfvId),
-    );
+    var anyModified = item.isModified ?? false;
+    final mappedFields = <Map<String, dynamic>>[];
+
+    for (final oldField in item.ticketFieldValues) {
+      final current = _matchCurrentFieldForOld(oldField);
+      var valText = oldField.valText?.toString() ?? '';
+      var attachments = oldField.attachments
+          .map((m) => Map<String, dynamic>.from(m))
+          .toList();
+      var isModified = false;
+
+      if (edits != null && current != null) {
+        final type = _normDataType(current);
+        if (_isUploadType(type)) {
+          final replaced =
+              uploadReplacedCurrentTfvIds.contains(current.tfvId);
+          if (replaced) {
+            valText = _valTextFromSnapshot(current, edits);
+            attachments = _attachmentsFromSnapshot(
+              current,
+              edits,
+              replaced: true,
+            );
+            // Keep old field identity (tfvId) on the historic row.
+            for (final a in attachments) {
+              a['fileType'] = a['fileType'] ?? type;
+            }
+            isModified = true;
+          }
+        } else {
+          final next = _valTextFromSnapshot(current, edits);
+          if (next.trim() != valText.trim()) {
+            valText = next;
+            isModified = true;
+          }
+        }
+      }
+
+      anyModified = anyModified || isModified;
+      mappedFields.add(
+        _mapFieldValue(
+          oldField,
+          valText: valText,
+          attachments: attachments,
+          isModified: isModified,
+        ),
+      );
+    }
+
     return <String, dynamic>{
       'actualStartDt': _normalizeDateString(item.actualStartDt),
       'actualEndDt': _normalizeDateString(item.actualEndDt),
-      'ticketFieldValues': item.ticketFieldValues
-          .map(
-            (f) => _mapFieldValue(
-              f,
-              valText: f.valText?.toString() ?? '',
-              attachments: f.attachments,
-              isModified: modifiedFieldIds.contains(f.tfvId),
-            ),
-          )
-          .toList(),
+      'ticketFieldValues': mappedFields,
       'makerUserName': item.makerUserName ?? '',
-      'isModified': hasModifiedField || (item.isModified ?? false),
+      'isModified': anyModified,
     };
   }
 
@@ -2478,25 +2697,88 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     double? checkerLatitude,
     double? checkerLongitude,
   }) {
-    final updatedValTextByTfv = <int, String>{
-      for (final f in _sortedFields) f.tfvId: _valTextForField(f),
-    };
-    final updatedAttachmentsByTfv = <int, List<Map<String, dynamic>>>{
-      for (final f in widget.detail.ticketFieldValues)
-        f.tfvId: _attachmentsForUploadFieldPost(
-          f,
-          updatedValTextByTfv[f.tfvId] ?? '',
-        ),
-    };
+    // Persist in-progress historic edits before reading them for POST.
+    if (_historicPickerIndex >= 0 && _isCheckerRole) {
+      _historicEditsByIndex[_historicPickerIndex] = _captureFieldSnapshot();
+    }
+
+    final viewingHistoric = _historicPickerIndex >= 0;
+    final currentDraft =
+        viewingHistoric ? _draftWhenLeavingCurrent : null;
+
+    final updatedValTextByTfv = <int, String>{};
+    final updatedAttachmentsByTfv = <int, List<Map<String, dynamic>>>{};
     final modifiedFieldIds = <int>{};
+
     for (final f in widget.detail.ticketFieldValues) {
-      final valText = updatedValTextByTfv[f.tfvId] ?? '';
-      final updatedAttachments =
-          updatedAttachmentsByTfv[f.tfvId] ?? const <Map<String, dynamic>>[];
+      late final String valText;
+      late final List<Map<String, dynamic>> attachments;
+
+      if (viewingHistoric) {
+        // Current-day payload must come from the stashed today draft, not the
+        // historic overlay currently on screen.
+        if (currentDraft != null) {
+          final replaced = _uploadReplacedTfvIds.contains(f.tfvId);
+          if (_isUploadType(_normDataType(f))) {
+            valText = replaced
+                ? _valTextFromSnapshot(f, currentDraft)
+                : () {
+                    final hydrated = _hydrateAttachmentsForField(
+                      f,
+                      source: f.attachments,
+                    );
+                    if (_isSingleFileUploadField(f)) {
+                      if (hydrated.isNotEmpty) {
+                        return (_rawAttachmentIdFromMap(hydrated.first) ?? '')
+                            .trim();
+                      }
+                      final parts = _idsFromValText(f);
+                      return parts.isEmpty ? '' : parts.last;
+                    }
+                    final ids = <String>[];
+                    final seen = <String>{};
+                    for (final id in _idsFromValText(f)) {
+                      if (seen.add(id)) ids.add(id);
+                    }
+                    for (final a in hydrated) {
+                      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+                      if (id.isEmpty || id == '0' || !seen.add(id)) continue;
+                      ids.add(id);
+                    }
+                    return ids.join(',');
+                  }();
+            attachments = replaced
+                ? _attachmentsFromSnapshot(f, currentDraft, replaced: true)
+                : _hydrateAttachmentsForField(f, source: f.attachments)
+                    .map((a) {
+                      final copy = Map<String, dynamic>.from(a);
+                      copy.remove('_localPath');
+                      copy['isModified'] = false;
+                      return copy;
+                    })
+                    .toList();
+          } else {
+            valText = _valTextFromSnapshot(f, currentDraft);
+            attachments =
+                f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
+          }
+        } else {
+          valText = f.valText?.toString() ?? '';
+          attachments =
+              f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
+        }
+      } else {
+        valText = _valTextForField(f);
+        attachments = _attachmentsForUploadFieldPost(f, valText);
+      }
+
+      updatedValTextByTfv[f.tfvId] = valText;
+      updatedAttachmentsByTfv[f.tfvId] = attachments;
       if (_isTicketFieldModified(
         f,
         updatedValText: valText,
-        updatedAttachments: updatedAttachments,
+        updatedAttachments: attachments,
+        historicIndex: -1,
       )) {
         modifiedFieldIds.add(f.tfvId);
       }
@@ -2605,9 +2887,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           .toList(),
       'makerUserName': widget.detail.makerUserName ?? '',
       'makerDesignationName': widget.detail.makerDesignationName ?? '',
-      'oldData': widget.detail.oldData
-          .map((item) => _mapOldData(item, modifiedFieldIds: modifiedFieldIds))
-          .toList(),
+      'oldData': [
+        for (var i = 0; i < widget.detail.oldData.length; i++)
+          _mapOldData(
+            widget.detail.oldData[i],
+            edits: _historicEditsByIndex[i],
+            uploadReplacedCurrentTfvIds:
+                _historicUploadReplacedByOldIndex[i] ?? const <int>{},
+          ),
+      ],
       'showReviewBtns': widget.detail.showReviewBtns,
       'checkerLvl': widget.detail.checkerLvl ?? '',
       'role': _normalizedRole,
