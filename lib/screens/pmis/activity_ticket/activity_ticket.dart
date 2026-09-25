@@ -280,9 +280,25 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }
 
   /// Prefer in-memory uploads from this session, then API snapshot on [f].
+  /// When multiple live rows exist, prefer the id in [valText] (latest).
   Map<String, dynamic>? _primaryAttachmentMapForUi(PmisTicketFieldValue f) {
     final live = _uploadedAttachmentsByTfv[f.tfvId];
-    if (live != null) {
+    if (live != null && live.isNotEmpty) {
+      final preferred = _idsFromValText(f);
+      if (preferred.isNotEmpty) {
+        final want = preferred.last;
+        Map<String, dynamic>? matched;
+        var bestTa = -1;
+        for (final a in live) {
+          if ((_rawAttachmentIdFromMap(a) ?? '').trim() != want) continue;
+          final t = _taIdFromMap(a);
+          if (t >= bestTa) {
+            bestTa = t;
+            matched = a;
+          }
+        }
+        if (matched != null) return matched;
+      }
       for (final a in live) {
         final id = _rawAttachmentIdFromMap(a) ?? '';
         if (id.isNotEmpty && id != '0' && id.toLowerCase() != 'null') {
@@ -887,8 +903,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return out;
   }
 
-  /// Multi-file GET often returns every id in [valText] but only one row in
-  /// [attachments]. Build a full list so the UI / next POST keep all videos.
+  /// Build the attachment list used for tiles / POST helpers.
+  ///
+  /// Rules:
+  /// - **Single-file**: only the [valText] id (else newest row).
+  /// - **Multi-file**: prefer rows that appear in both [valText] and
+  ///   [attachments]. That drops stale valText orphans *and* leftover
+  ///   attachment rows that are no longer in valText (common after replaces).
+  /// - If [attachments] is empty, synthesize from [valText].
+  /// - If [valText] is empty, use deduped [attachments].
   List<Map<String, dynamic>> _hydrateAttachmentsForField(
     PmisTicketFieldValue f, {
     List<Map<String, dynamic>>? source,
@@ -901,45 +924,44 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return _normalizedLiveAttachmentsForField(f, source: fromApi);
     }
 
-    final byId = <String, Map<String, dynamic>>{};
-    for (final a in fromApi) {
-      final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
-      if (id.isEmpty) continue;
-      byId[id] = Map<String, dynamic>.from(a);
-    }
-
-    final type = _normDataType(f);
-    final out = <Map<String, dynamic>>[];
-    final seen = <String>{};
-
-    void addId(String id) {
-      if (id.isEmpty || !seen.add(id)) return;
-      final existing = byId[id];
-      if (existing != null) {
-        out.add(existing);
-        return;
+    final valIds = _idsFromValText(f);
+    if (fromApi.isEmpty) {
+      final type = _normDataType(f);
+      final out = <Map<String, dynamic>>[];
+      final seen = <String>{};
+      for (final id in valIds) {
+        if (id.isEmpty || !seen.add(id)) continue;
+        out.add(<String, dynamic>{
+          'fileType': type,
+          'latitude': 0,
+          'longitude': 0,
+          'geoAccuracyM': 0,
+          'geoSource': '',
+          'capturedDt': '',
+          'taggedMmId': null,
+          'attachmentId': int.tryParse(id) ?? id,
+          'isActive': true,
+          'remarks': '',
+        });
       }
-      out.add(<String, dynamic>{
-        'fileType': type,
-        'latitude': 0,
-        'longitude': 0,
-        'geoAccuracyM': 0,
-        'geoSource': '',
-        'capturedDt': '',
-        'taggedMmId': null,
-        'attachmentId': int.tryParse(id) ?? id,
-        'isActive': true,
-        'remarks': '',
-      });
+      return out;
     }
 
-    for (final id in _idsFromValText(f)) {
-      addId(id);
+    if (valIds.isEmpty) return fromApi;
+
+    final byId = <String, Map<String, dynamic>>{
+      for (final a in fromApi)
+        (_rawAttachmentIdFromMap(a) ?? '').trim(): a,
+    };
+    final intersected = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final id in valIds) {
+      if (id.isEmpty || !seen.add(id)) continue;
+      final row = byId[id];
+      if (row != null) intersected.add(Map<String, dynamic>.from(row));
     }
-    for (final a in fromApi) {
-      addId((_rawAttachmentIdFromMap(a) ?? '').trim());
-    }
-    return out;
+    // valText totally out of sync with attachments → show attachments as-is.
+    return intersected.isNotEmpty ? intersected : fromApi;
   }
 
   /// Normalize live attachments for a field: active rows only, dedupe, and for
@@ -1869,8 +1891,18 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }) {
     final allowMultiple = _allowsMultipleFiles(f);
     final files = _filesByTfv[f.tfvId]!;
-    final attachments =
+    final liveAll =
         _uploadedAttachmentsByTfv[f.tfvId] ?? <Map<String, dynamic>>[];
+    // Single-file: never render more than the current valText / primary row,
+    // even if the API still returns older attachment history.
+    final attachments = allowMultiple
+        ? liveAll
+        : () {
+            if (liveAll.isEmpty) return liveAll;
+            final prim = _primaryAttachmentMapForUi(f);
+            if (prim != null) return <Map<String, dynamic>>[prim];
+            return <Map<String, dynamic>>[liveAll.last];
+          }();
     final isVideo = fileTypeForAttachment == 'VIDEO';
 
     final uploadWidget = CustomFileUploadNew(
@@ -2157,7 +2189,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return '$lat, $lng';
     }
     if (_isUploadType(type)) {
-      // Unchanged upload: keep every known id (valText ∪ attachments).
+      // Unchanged upload: prefer real attachment rows over stale valText ids.
       if (!_isUploadReplacedForField(f.tfvId)) {
         if (_isSingleFileUploadField(f)) {
           final apiPrimary = _normalizedLiveAttachmentsForField(
@@ -2170,18 +2202,18 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           final parts = _idsFromValText(f);
           return parts.isEmpty ? '' : parts.last;
         }
-        final ids = <String>[];
-        final seen = <String>{};
-        for (final id in _idsFromValText(f)) {
-          if (seen.add(id)) ids.add(id);
-        }
         final hydrated = _hydrateAttachmentsForField(f);
-        for (final a in hydrated) {
-          final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
-          if (id.isEmpty || id == '0' || !seen.add(id)) continue;
-          ids.add(id);
+        if (hydrated.isNotEmpty) {
+          final ids = <String>[];
+          final seen = <String>{};
+          for (final a in hydrated) {
+            final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
+            if (id.isEmpty || id == '0' || !seen.add(id)) continue;
+            ids.add(id);
+          }
+          return ids.join(',');
         }
-        return ids.join(',');
+        return _idsFromValText(f).join(',');
       }
 
       final attachments = _normalizedLiveAttachmentsForField(f);
@@ -2363,28 +2395,11 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       return f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
     }
 
-    // No new file this session → echo existing rows (not []). Some backends
-    // replace the attachments collection whenever the ticket is posted, so an
-    // empty array would wipe previously uploaded videos/PDFs/images.
+    // No new file this session → send [] and keep field isModified=false.
+    // Resending existing attachment rows makes this API insert duplicate taIds
+    // (same attachmentId, new taId) on every plain Submit.
     if (!_isUploadReplacedForField(f.tfvId)) {
-      final live = _uploadedAttachmentsByTfv[f.tfvId];
-      final source = (live != null && live.isNotEmpty)
-          ? live
-          : _hydrateAttachmentsForField(f, source: f.attachments);
-      final out = <Map<String, dynamic>>[];
-      final seen = <String>{};
-      for (final a in source) {
-        if (a['isActive'] == false) continue;
-        final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
-        if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
-        if (!seen.add(id)) continue;
-        final copy = Map<String, dynamic>.from(a);
-        copy.remove('_localPath');
-        // Explicitly not a mutation — avoids duplicate inserts on plain submit.
-        copy['isModified'] = false;
-        out.add(copy);
-      }
-      return out;
+      return const <Map<String, dynamic>>[];
     }
 
     var ids = valText
@@ -2672,11 +2687,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       }
 
       anyModified = anyModified || isModified;
+      final type = _normDataType(oldField);
+      final postAttachments = (!isModified && _isUploadType(type))
+          ? const <Map<String, dynamic>>[]
+          : attachments;
       mappedFields.add(
         _mapFieldValue(
           oldField,
           valText: valText,
-          attachments: attachments,
+          attachments: postAttachments,
           isModified: isModified,
         ),
       );
@@ -2749,14 +2768,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                   }();
             attachments = replaced
                 ? _attachmentsFromSnapshot(f, currentDraft, replaced: true)
-                : _hydrateAttachmentsForField(f, source: f.attachments)
-                    .map((a) {
-                      final copy = Map<String, dynamic>.from(a);
-                      copy.remove('_localPath');
-                      copy['isModified'] = false;
-                      return copy;
-                    })
-                    .toList();
+                : const <Map<String, dynamic>>[];
           } else {
             valText = _valTextFromSnapshot(f, currentDraft);
             attachments =
@@ -2764,8 +2776,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           }
         } else {
           valText = f.valText?.toString() ?? '';
-          attachments =
-              f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
+          attachments = _isUploadType(_normDataType(f))
+              ? const <Map<String, dynamic>>[]
+              : f.attachments.map((m) => Map<String, dynamic>.from(m)).toList();
         }
       } else {
         valText = _valTextForField(f);
