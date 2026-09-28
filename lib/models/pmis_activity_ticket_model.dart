@@ -24,6 +24,8 @@ class PmisActivityTicketDetail extends Equatable {
   final bool showReviewBtns;
   final String? checkerLvl;
   final String? role;
+  /// When true, ticket fields and submit are read-only (API-driven).
+  final bool viewOnly;
   final List<Map<String, dynamic>> ticketStatusHistory;
   final bool isRepeating;
   final String? repeatDt;
@@ -54,6 +56,7 @@ class PmisActivityTicketDetail extends Equatable {
     required this.showReviewBtns,
     required this.checkerLvl,
     required this.role,
+    required this.viewOnly,
     required this.ticketStatusHistory,
     required this.isRepeating,
     required this.repeatDt,
@@ -201,6 +204,9 @@ class PmisActivityTicketDetail extends Equatable {
       showReviewBtns: parseBool(json['showReviewBtns']),
       checkerLvl: parseStringNullable(json['checkerLvl']),
       role: parseStringNullable(json['role']),
+      viewOnly: parseBool(
+        pick(json, const <String>['viewOnly', 'view_only']),
+      ),
       ticketStatusHistory: statusHistory,
       isRepeating: parseBool(json['isRepeating']),
       repeatDt: parseStringNullable(json['repeatDt']),
@@ -236,6 +242,7 @@ class PmisActivityTicketDetail extends Equatable {
         showReviewBtns,
         checkerLvl,
         role,
+        viewOnly,
         ticketStatusHistory,
         isRepeating,
         repeatDt,

@@ -431,16 +431,16 @@ class _ImageUploadFieldState extends State<ImageUploadField> {
   }
 
   Widget _buildPlaceholder() {
-    return const Center(
+    return Center(
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.camera_alt_outlined,
+          const Icon(Icons.camera_alt_outlined,
               size: 20, color: AppColors.color555555),
-          SizedBox(width: 6),
+          const SizedBox(width: 6),
           Text(
-            "Take Photo",
-            style: TextStyle(
+            widget.placeholder ?? 'Take Photo',
+            style: const TextStyle(
               fontWeight: FontWeight.w500,
               color: AppColors.color555555,
               fontFamily: fontFamilyMontserrat,

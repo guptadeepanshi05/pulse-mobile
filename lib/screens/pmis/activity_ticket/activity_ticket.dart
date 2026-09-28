@@ -69,7 +69,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   /// Upload edits while viewing historic [oldData] (oldData index → current tfvIds).
   final Map<int, Set<int>> _historicUploadReplacedByOldIndex = {};
 
-  /// Field snapshots for historic days edited by Checker / Ticket Manager.
+  /// Field snapshots for historic days when the ticket is editable.
   final Map<int, _AtFieldSnapshot> _historicEditsByIndex = {};
 
   late List<PmisTicketFieldValue> _sortedFields;
@@ -1097,34 +1097,13 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
 
   bool get _isViewingEditableTicket => _historicPickerIndex < 0;
 
-  bool get _hasAssignedRole {
-    return widget.detail.role?.trim().isNotEmpty == true;
-  }
-
   String get _normalizedRole {
     return (widget.detail.role ?? '').trim().toUpperCase();
   }
 
-  /// API role/status gate:
-  /// maker cannot edit when activity status is completed (case-insensitive).
-  bool get _isMakerCompletedReadOnly {
-    if (!_hasAssignedRole) return true;
-    final activityStatus = widget.detail.currentStatus.trim().toUpperCase();
-    return _normalizedRole == 'MAKER' && activityStatus == 'COMPLETED';
-  }
-
-  bool get _isTicketManagerRole => _normalizedRole == 'TICKET_MANAGER';
-
-  /// Maker: edit current day only (view previous).
-  /// Checker / Ticket Manager: edit current and previous day data.
-  bool get _canEditTicketFields {
-    if (!_hasAssignedRole) return false;
-    if (!_isViewingEditableTicket) {
-      return _isCheckerRole;
-    }
-    if (_isCheckerRole) return true;
-    return !_isMakerCompletedReadOnly;
-  }
+  /// Editable when API [viewOnly] is false. Role (maker/checker/ticket_manager)
+  /// is not used for field editability.
+  bool get _canEditTicketFields => !widget.detail.viewOnly;
 
   void _markUploadReplaced(int tfvId) {
     if (_historicPickerIndex >= 0) {
@@ -1144,21 +1123,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return _uploadReplacedTfvIds.contains(tfvId);
   }
 
-  /// Roles that can run checker-style review submission (when that popup is used).
-  bool get _isCheckerRole {
-    return _normalizedRole.contains('CHECKER') || _isTicketManagerRole;
-  }
-
-  /// Close-popup selection:
-  /// - CHECKER → checker popup
-  /// - TICKET_MANAGER + showReviewBtns true → checker popup
-  /// - TICKET_MANAGER + showReviewBtns false → maker popup
-  /// - others → maker popup
-  bool get _shouldShowCheckerClosePopup {
-    if (_normalizedRole.contains('CHECKER')) return true;
-    if (_isTicketManagerRole) return widget.detail.showReviewBtns;
-    return false;
-  }
+  /// Checker close popup when API asks for review buttons.
+  bool get _shouldShowCheckerClosePopup => widget.detail.showReviewBtns;
 
   PmisAllowedStatus? _findAllowedStatusForCheckerAction(
     ActivityTicketCheckerAction action,
@@ -1425,7 +1391,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     if (prev < 0 && newIndex >= 0) {
       _draftWhenLeavingCurrent = _captureFieldSnapshot();
     }
-    if (prev >= 0 && _isCheckerRole) {
+    if (prev >= 0 && _canEditTicketFields) {
       _historicEditsByIndex[prev] = _captureFieldSnapshot();
     }
 
@@ -1472,10 +1438,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          _isCheckerRole
+          _canEditTicketFields
               ? "Choose a date to view or edit that day's activities."
-              : "Choose a date to view that day's activities. "
-                  'Previous days are view-only for Maker.',
+              : "Choose a date to view that day's activities.",
           style: TextStyle(
             color: AppColors.white.withValues(alpha: 0.95),
             fontSize: 14,
@@ -1630,8 +1595,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
 
   Future<Map<String, dynamic>> _buildAttachmentObject(
     String uploadedId,
-    String fileType,
-  ) async {
+    String fileType, {
+    String? originalFileName,
+  }) async {
     double latitude = 0;
     double longitude = 0;
     try {
@@ -1642,6 +1608,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       // Keep 0,0 when location isn't available.
     }
 
+    final name = (originalFileName ?? '').trim();
     return <String, dynamic>{
       'fileType': fileType,
       'latitude': latitude,
@@ -1652,6 +1619,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       // Backend FK: 0 is not a valid pmis_module_mst id; Swagger often omits this.
       'taggedMmId': null,
       'attachmentId': int.tryParse(uploadedId) ?? uploadedId,
+      if (name.isNotEmpty) 'fileName': name,
+      if (name.isNotEmpty) 'attachmentName': name,
       'isActive': true,
       'remarks': '',
       // Caller sets [taId] when replacing an existing field attachment row.
@@ -1830,7 +1799,11 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         }
         return null;
       }
-      return await _buildAttachmentObject(uploadedId, 'IMAGE');
+      return await _buildAttachmentObject(
+        uploadedId,
+        'IMAGE',
+        originalFileName: p.basename(file.path),
+      );
     } finally {
       LoaderWidget.hideLoader();
     }
@@ -1858,6 +1831,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     // Reuse is irrelevant for POST (API is append-only); still tag the pick.
     final attachment = await _uploadImageFileWithChecks(file);
     if (attachment == null || !mounted) return;
+    attachment['_localPath'] = file.path;
     setState(() {
       list
         ..clear()
@@ -1987,6 +1961,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
           final attachment = await _buildAttachmentObject(
             uploadedId,
             fileTypeForAttachment,
+            originalFileName: p.basename(file.path),
           );
           attachment['_localPath'] = file.path;
           if (!mounted) return;
@@ -2475,6 +2450,12 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         row['capturedDt'] = _nowForBackend();
         row.remove('taId'); // new insert
         row.remove('_localPath');
+        // Keep original device name on POST (not server-generated PDF{id}).
+        final liveName = _attachmentDisplayName(row, '').trim();
+        if (liveName.isNotEmpty) {
+          row['fileName'] = liveName;
+          row['attachmentName'] = liveName;
+        }
         out.add(row);
       }
       return out;
@@ -2547,6 +2528,12 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     row['isActive'] = true;
     row['isModified'] = true;
     row['capturedDt'] = _nowForBackend();
+    row.remove('_localPath');
+    final liveName = _attachmentDisplayName(row, '').trim();
+    if (liveName.isNotEmpty) {
+      row['fileName'] = liveName;
+      row['attachmentName'] = liveName;
+    }
     // UPDATE the oldest/canonical taId in place — do not omit taId (that inserts).
     if (keepTaId > 0) {
       row['taId'] = keepTaId;
@@ -2717,7 +2704,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     double? checkerLongitude,
   }) {
     // Persist in-progress historic edits before reading them for POST.
-    if (_historicPickerIndex >= 0 && _isCheckerRole) {
+    if (_historicPickerIndex >= 0 && _canEditTicketFields) {
       _historicEditsByIndex[_historicPickerIndex] = _captureFieldSnapshot();
     }
 
@@ -2803,7 +2790,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
             (widget.detail.actualStartDt?.trim().isEmpty ?? true)
         ? _nowForBackend()
         : _normalizeDateString(widget.detail.actualStartDt);
-    final isCheckerSubmission = checkerClose != null && _isCheckerRole;
+    final isCheckerSubmission = checkerClose != null;
     final payloadCurrentStatus = isCheckerSubmission
         ? widget.detail.currentStatus
         : close.currentStatus;
@@ -2912,6 +2899,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       'showReviewBtns': widget.detail.showReviewBtns,
       'checkerLvl': widget.detail.checkerLvl ?? '',
       'role': _normalizedRole,
+      'viewOnly': widget.detail.viewOnly,
       'ticketStatusHistory': widget.detail.ticketStatusHistory.map((e) {
         final mapped = Map<String, dynamic>.from(e);
         mapped['changedDt'] = _normalizeDateString(
@@ -3019,6 +3007,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   }
 
   Future<void> _onSubmit() async {
+    if (!_canEditTicketFields) return;
     FocusScope.of(context).unfocus();
     ActivityTicketClosePopupResult? close;
     ActivityTicketCheckerClosePopupResult? checkerCloseResult;
@@ -3057,9 +3046,6 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
               ),
             )
             .toList(),
-        role: _normalizedRole,
-        currentStatusId: widget.detail.currentStatusCode,
-        currentStatusCode: widget.detail.currentStatusCode,
       );
     }
     if (!mounted) return;
@@ -3274,7 +3260,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                 label: label,
                 req: req,
                 fileTypeForAttachment: 'IMAGE',
-                acceptedFileTypes: '(Images)',
+                acceptedFileTypes: 'Multiple image upload',
                 pickAllowedExtensions: const [
                   'jpg',
                   'jpeg',
@@ -3302,7 +3288,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
                 'at_img_${f.tfvId}_${ext?.length ?? 0}_${_filesByTfv[f.tfvId]?.length ?? 0}',
               ),
               label: label,
-              placeholder: 'Upload a File',
+              placeholder: 'Upload a photo',
               isRequired: req && editable,
               isDisabled: !editable,
               uploadBoxHeight: 168,

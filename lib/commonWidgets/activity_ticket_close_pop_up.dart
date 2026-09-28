@@ -85,9 +85,6 @@ Future<ActivityTicketClosePopupResult?> showActivityTicketClosePopup(
   DateTime? initialRepetitionDate,
   String? initialRemarks,
   List<ActivityTicketCloseStatusOption>? statusOptions,
-  String? role,
-  int? currentStatusId,
-  int? currentStatusCode,
 }) {
   return showDialog<ActivityTicketClosePopupResult>(
     context: context,
@@ -98,9 +95,6 @@ Future<ActivityTicketClosePopupResult?> showActivityTicketClosePopup(
       initialRepetitionDate: initialRepetitionDate,
       initialRemarks: initialRemarks,
       statusOptions: statusOptions,
-      role: role,
-      currentStatusId: currentStatusId,
-      currentStatusCode: currentStatusCode,
     ),
   );
 }
@@ -110,9 +104,6 @@ class ActivityTicketClosePopup extends StatefulWidget {
   final DateTime? initialRepetitionDate;
   final String? initialRemarks;
   final List<ActivityTicketCloseStatusOption>? statusOptions;
-  final String? role;
-  final int? currentStatusId;
-  final int? currentStatusCode;
 
   const ActivityTicketClosePopup({
     super.key,
@@ -120,9 +111,6 @@ class ActivityTicketClosePopup extends StatefulWidget {
     this.initialRepetitionDate,
     this.initialRemarks,
     this.statusOptions,
-    this.role,
-    this.currentStatusId,
-    this.currentStatusCode,
   });
 
   @override
@@ -152,14 +140,7 @@ class _ActivityTicketClosePopupState extends State<ActivityTicketClosePopup> {
   DateTime? _repetitionDate;
   bool _showStatusError = false;
 
-  bool get _isMakerWithExistingStatus {
-    final role = (widget.role ?? '').trim().toUpperCase();
-    return role == 'MAKER' &&
-        widget.currentStatusId != null &&
-        widget.currentStatusCode != null;
-  }
-
-  bool get _statusRequired => !_isMakerWithExistingStatus;
+  bool get _statusRequired => true;
   bool get _remarksRequired => true;
 
   /// Repetition date should appear only for Completed - To Be Repeated.
