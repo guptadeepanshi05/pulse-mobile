@@ -113,9 +113,34 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         a['ImageId'] ??
         a['photoId'] ??
         a['PhotoId'];
+    return _normalizeAttachmentId(v);
+  }
+
+  /// Normalize ids so `3287`, `3287.0`, and `"3287"` all match.
+  static String? _normalizeAttachmentId(dynamic v) {
     if (v == null) return null;
+    if (v is int) return v.toString();
+    if (v is num) {
+      final asInt = v.toInt();
+      if (v == asInt) return asInt.toString();
+      return v.toString().trim();
+    }
     final s = v.toString().trim();
-    return s.isEmpty ? null : s;
+    if (s.isEmpty || s.toLowerCase() == 'null') return null;
+    final asNum = num.tryParse(s);
+    if (asNum != null) {
+      final asInt = asNum.toInt();
+      if (asNum == asInt) return asInt.toString();
+    }
+    return s;
+  }
+
+  static bool _isInactiveAttachment(Map<String, dynamic> a) {
+    final v = a['isActive'] ?? a['is_active'];
+    if (v == null) return false;
+    if (v == false || v == 0) return true;
+    final s = v.toString().trim().toLowerCase();
+    return s == 'false' || s == '0' || s == 'no';
   }
 
   /// Longitude if name clearly indicates longitude; latitude if it says
@@ -229,19 +254,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   /// First attachment row with a usable server id, else first id from [valText].
   /// For IMAGE rows, prefer the id in [valText] (latest) over older orphan rows.
   static Map<String, dynamic>? _primaryAttachmentMap(PmisTicketFieldValue f) {
-    final vt = f.valText?.toString().trim() ?? '';
-    final preferredIds = vt
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty && e != '0' && e.toLowerCase() != 'null')
-        .toList();
+    final preferredIds = _idsFromValText(f);
     final want = preferredIds.isNotEmpty ? preferredIds.last : '';
 
     if (want.isNotEmpty) {
       Map<String, dynamic>? matched;
       var bestTa = -1;
       for (final a in f.attachments) {
-        if (a['isActive'] == false) continue;
+        if (_isInactiveAttachment(a)) continue;
         final id = _rawAttachmentIdFromMap(a) ?? '';
         if (id != want) continue;
         final t = int.tryParse(a['taId']?.toString() ?? '') ?? 0;
@@ -253,13 +273,15 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       if (matched != null) return matched;
       return <String, dynamic>{
         'attachmentId': int.tryParse(want) ?? want,
+        'fileType': _normDataType(f),
+        'isActive': true,
       };
     }
 
     Map<String, dynamic>? best;
     var bestTa = -1;
     for (final a in f.attachments) {
-      if (a['isActive'] == false) continue;
+      if (_isInactiveAttachment(a)) continue;
       final id = _rawAttachmentIdFromMap(a) ?? '';
       if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
       final t = int.tryParse(a['taId']?.toString() ?? '') ?? 0;
@@ -450,6 +472,20 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     return file;
   }
 
+  static bool _isVideoFileExtension(String ext) {
+    final e = ext.trim().toLowerCase();
+    final bare = e.startsWith('.') ? e.substring(1) : e;
+    return const {
+      'mp4',
+      'mov',
+      'm4v',
+      'avi',
+      'mkv',
+      'webm',
+      '3gp',
+    }.contains(bare);
+  }
+
   static String _extensionForUploadType(String normType, Uint8List bytes) {
     if (bytes.length >= 4 &&
         bytes[0] == 0x25 &&
@@ -465,8 +501,22 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         bytes[7] == 0x70) {
       return '.mp4';
     }
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return '.jpg';
+    }
+    if (bytes.length >= 8 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return '.png';
+    }
     if (normType == 'VIDEO') return '.mp4';
     if (normType == 'PDF') return '.pdf';
+    if (normType == 'IMAGE') return '.jpg';
     return '.bin';
   }
 
@@ -505,6 +555,9 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       var ext = p.extension(_attachmentDisplayName(prim, ''));
       if (ext.isEmpty || ext == '.') {
         ext = _extensionForUploadType(type, bytes);
+      }
+      if (type == 'VIDEO' && !_isVideoFileExtension(ext)) {
+        ext = '.mp4';
       }
       final dir = await getTemporaryDirectory();
       final file = File(
@@ -772,8 +825,10 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         var ext = prim != null
             ? p.extension(_attachmentDisplayName(prim, ''))
             : '';
-        if (ext.isEmpty || ext == '.') {
-          ext = _extensionForUploadType('VIDEO', bytes);
+        if (ext.isEmpty || ext == '.' || !_isVideoFileExtension(ext)) {
+          // Always use a video extension for the player — DocumentById may
+          // sniff as image for some ids; field type is VIDEO.
+          ext = '.mp4';
         }
         final dir = await getTemporaryDirectory();
         file = File(
@@ -871,7 +926,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     final order = <String>[];
     for (final raw in attachments) {
       final a = Map<String, dynamic>.from(raw);
-      if (a['isActive'] == false) continue;
+      if (_isInactiveAttachment(a)) continue;
       final id = (_rawAttachmentIdFromMap(a) ?? '').trim();
       if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
       final existing = byId[id];
@@ -895,8 +950,8 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     final out = <String>[];
     final seen = <String>{};
     for (final part in raw.split(',')) {
-      final id = part.trim();
-      if (id.isEmpty || id == '0' || id.toLowerCase() == 'null') continue;
+      final id = _normalizeAttachmentId(part);
+      if (id == null || id.isEmpty || id == '0') continue;
       if (!seen.add(id)) continue;
       out.add(id);
     }
@@ -910,7 +965,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
   /// - **Multi-file**: prefer rows that appear in both [valText] and
   ///   [attachments]. That drops stale valText orphans *and* leftover
   ///   attachment rows that are no longer in valText (common after replaces).
-  /// - If [attachments] is empty, synthesize from [valText].
+  /// - If [attachments] is empty, synthesize from [valText] (single or multi).
   /// - If [valText] is empty, use deduped [attachments].
   List<Map<String, dynamic>> _hydrateAttachmentsForField(
     PmisTicketFieldValue f, {
@@ -920,16 +975,17 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
       source ??
           f.attachments.map((m) => Map<String, dynamic>.from(m)).toList(),
     );
-    if (_isSingleFileUploadField(f)) {
-      return _normalizedLiveAttachmentsForField(f, source: fromApi);
-    }
-
     final valIds = _idsFromValText(f);
+    final type = _normDataType(f);
+
     if (fromApi.isEmpty) {
-      final type = _normDataType(f);
+      // oldData often has only valText ids and empty attachments[].
       final out = <Map<String, dynamic>>[];
       final seen = <String>{};
-      for (final id in valIds) {
+      final ids = _isSingleFileUploadField(f)
+          ? (valIds.isEmpty ? const <String>[] : <String>[valIds.last])
+          : valIds;
+      for (final id in ids) {
         if (id.isEmpty || !seen.add(id)) continue;
         out.add(<String, dynamic>{
           'fileType': type,
@@ -945,6 +1001,10 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
         });
       }
       return out;
+    }
+
+    if (_isSingleFileUploadField(f)) {
+      return _normalizedLiveAttachmentsForField(f, source: fromApi);
     }
 
     if (valIds.isEmpty) return fromApi;
@@ -1244,13 +1304,14 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
             geoSource: matched.geoSource ?? current.geoSource,
             isActive: current.isActive,
             remarks: matched.remarks ?? current.remarks,
+            // Prefer historic attachments. When oldData only has valText ids
+            // (attachments: []), keep empty so hydrate synthesizes VIDEO/PDF
+            // rows from valText — do not fall back to current-day attachments.
             attachments: matched.attachments.isNotEmpty
                 ? matched.attachments
                     .map((m) => Map<String, dynamic>.from(m))
                     .toList()
-                : current.attachments
-                    .map((m) => Map<String, dynamic>.from(m))
-                    .toList(),
+                : const <Map<String, dynamic>>[],
             subActivityName: current.subActivityName,
             subActivityDataType: current.subActivityDataType,
             subActivityControlType: current.subActivityControlType,
@@ -1864,17 +1925,37 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     bool useImageCamera = false,
   }) {
     final allowMultiple = _allowsMultipleFiles(f);
-    final files = _filesByTfv[f.tfvId]!;
-    final liveAll =
-        _uploadedAttachmentsByTfv[f.tfvId] ?? <Map<String, dynamic>>[];
+    final files = _filesByTfv.putIfAbsent(f.tfvId, () => <File>[]);
+    // Prefer in-memory list when this field was bound (including intentional
+    // empty after user clears). Only hydrate from GET when unbound.
+    final liveAll = _uploadedAttachmentsByTfv.containsKey(f.tfvId)
+        ? (_uploadedAttachmentsByTfv[f.tfvId] ?? <Map<String, dynamic>>[])
+        : _hydrateAttachmentsForField(f);
     // Single-file: never render more than the current valText / primary row,
     // even if the API still returns older attachment history.
     final attachments = allowMultiple
         ? liveAll
         : () {
-            if (liveAll.isEmpty) return liveAll;
+            if (liveAll.isEmpty) {
+              // Unbound / valText-only historic rows: resolve primary id.
+              if (!_uploadedAttachmentsByTfv.containsKey(f.tfvId)) {
+                final prim = _primaryAttachmentMapForUi(f);
+                if (prim != null) {
+                  final withType = Map<String, dynamic>.from(prim);
+                  withType['fileType'] =
+                      withType['fileType'] ?? fileTypeForAttachment;
+                  return <Map<String, dynamic>>[withType];
+                }
+              }
+              return liveAll;
+            }
             final prim = _primaryAttachmentMapForUi(f);
-            if (prim != null) return <Map<String, dynamic>>[prim];
+            if (prim != null) {
+              final withType = Map<String, dynamic>.from(prim);
+              withType['fileType'] =
+                  withType['fileType'] ?? fileTypeForAttachment;
+              return <Map<String, dynamic>>[withType];
+            }
             return <Map<String, dynamic>>[liveAll.last];
           }();
     final isVideo = fileTypeForAttachment == 'VIDEO';
@@ -1991,7 +2072,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     final isImage = fileTypeForAttachment == 'IMAGE';
 
     for (final a in attachments) {
-      if (a['isActive'] == false) continue;
+      if (_isInactiveAttachment(a)) continue;
 
       final localPath = a['_localPath']?.toString();
       if (localPath != null && localPath.isNotEmpty) {
@@ -2689,6 +2770,7 @@ class _ActivityTicketScreenState extends State<ActivityTicketScreen> {
     }
 
     return <String, dynamic>{
+      'atId': item.atId,
       'actualStartDt': _normalizeDateString(item.actualStartDt),
       'actualEndDt': _normalizeDateString(item.actualEndDt),
       'ticketFieldValues': mappedFields,

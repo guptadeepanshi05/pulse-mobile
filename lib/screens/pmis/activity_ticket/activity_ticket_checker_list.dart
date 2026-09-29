@@ -56,6 +56,53 @@ class _ActivityTicketCheckerListScreenState
     return '$dd/$mm/$yyyy $hh:$min:$ss';
   }
 
+  /// Count active attachment rows across current + oldData fields.
+  static int _attachmentRowCount(PmisActivityTicketDetail detail) {
+    var n = 0;
+    void countField(PmisTicketFieldValue f) {
+      for (final a in f.attachments) {
+        if (a['isActive'] == false) continue;
+        n++;
+      }
+      final vt = (f.valText?.toString() ?? '').trim();
+      if (vt.isNotEmpty && f.attachments.isEmpty) {
+        n += vt.split(',').where((e) => e.trim().isNotEmpty).length;
+      }
+    }
+
+    for (final f in detail.ticketFieldValues) {
+      countField(f);
+    }
+    for (final old in detail.oldData) {
+      for (final f in old.ticketFieldValues) {
+        countField(f);
+      }
+    }
+    return n;
+  }
+
+  /// Prefer API detail; use offline only when same role/status and offline has
+  /// strictly more attachment/media rows (local-only pending uploads).
+  static PmisActivityTicketDetail _selectDetailForOpen({
+    required PmisActivityTicketDetail apiDetail,
+    required PmisActivityTicketDetail? offlineDetail,
+  }) {
+    if (offlineDetail == null) return apiDetail;
+    if (offlineDetail.atId != apiDetail.atId) return apiDetail;
+    if ((offlineDetail.role ?? '').trim().toUpperCase() !=
+        (apiDetail.role ?? '').trim().toUpperCase()) {
+      return apiDetail;
+    }
+    if (offlineDetail.currentStatus.trim().toUpperCase() !=
+        apiDetail.currentStatus.trim().toUpperCase()) {
+      return apiDetail;
+    }
+    final offlineCount = _attachmentRowCount(offlineDetail);
+    final apiCount = _attachmentRowCount(apiDetail);
+    if (offlineCount > apiCount) return offlineDetail;
+    return apiDetail;
+  }
+
   PmisActivityTicketDetail _detailForStartActivity(
     PmisActivityTicketDetail detail,
   ) {
@@ -180,6 +227,7 @@ class _ActivityTicketCheckerListScreenState
       'oldData': detail.oldData
           .map(
             (item) => <String, dynamic>{
+              'atId': item.atId,
               'actualStartDt': item.actualStartDt,
               'actualEndDt': item.actualEndDt,
               'ticketFieldValues': item.ticketFieldValues
@@ -294,19 +342,19 @@ class _ActivityTicketCheckerListScreenState
         );
       });
     }
-    final latestOffline = await PmisActivityTicketOfflineService.loadOfflineDetail(
+    if (!mounted) return;
+    // Prefer API/transitioned detail so fresh attachments are not hidden by a
+    // stale offline download. Fall back to offline only when it has local-only
+    // richer upload state (more attachment rows) for the same role/status.
+    final latestOffline =
+        await PmisActivityTicketOfflineService.loadOfflineDetail(
       widget.activityTicketId,
     );
     if (!mounted) return;
-    // Prefer fresh detail from API path. Use offline only when it is the same
-    // ticket and has matching role/status; this avoids stale role overrides.
-    final canUseOffline = latestOffline != null &&
-        latestOffline.atId == widget.activityTicketId &&
-        (latestOffline.role ?? '').trim().toUpperCase() ==
-            (transitionedDetail.role ?? '').trim().toUpperCase() &&
-        latestOffline.currentStatus.trim().toUpperCase() ==
-            transitionedDetail.currentStatus.trim().toUpperCase();
-    final openDetail = canUseOffline ? latestOffline : transitionedDetail;
+    final openDetail = _selectDetailForOpen(
+      apiDetail: transitionedDetail,
+      offlineDetail: latestOffline,
+    );
     final shouldRefreshActivities = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => ActivityTicketScreen(

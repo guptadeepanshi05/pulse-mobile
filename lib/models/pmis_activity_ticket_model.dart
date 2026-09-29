@@ -542,6 +542,7 @@ class PmisTicketAttachment extends Equatable {
 }
 
 class PmisOldDataItem extends Equatable {
+  final int? atId;
   final String? actualStartDt;
   final String? actualEndDt;
   final List<PmisTicketFieldValue> ticketFieldValues;
@@ -549,6 +550,7 @@ class PmisOldDataItem extends Equatable {
   final bool? isModified;
 
   const PmisOldDataItem({
+    this.atId,
     required this.actualStartDt,
     required this.actualEndDt,
     required this.ticketFieldValues,
@@ -558,7 +560,17 @@ class PmisOldDataItem extends Equatable {
 
   factory PmisOldDataItem.fromJson(Map<String, dynamic> json) {
     String? s(dynamic v) => v == null ? null : v.toString();
+    int? parseIntNullable(dynamic v) {
+      if (v == null) return null;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      final raw = v.toString().trim();
+      if (raw.isEmpty) return null;
+      return int.tryParse(raw) ?? double.tryParse(raw)?.toInt();
+    }
+
     return PmisOldDataItem(
+      atId: parseIntNullable(json['atId'] ?? json['at_id']),
       actualStartDt: s(json['actualStartDt'] ?? json['actual_start_dt']),
       actualEndDt: s(json['actualEndDt'] ?? json['actual_end_dt']),
       ticketFieldValues: ((json['ticketFieldValues'] ??
@@ -572,8 +584,14 @@ class PmisOldDataItem extends Equatable {
   }
 
   @override
-  List<Object?> get props =>
-      [actualStartDt, actualEndDt, ticketFieldValues, makerUserName, isModified];
+  List<Object?> get props => [
+        atId,
+        actualStartDt,
+        actualEndDt,
+        ticketFieldValues,
+        makerUserName,
+        isModified,
+      ];
 }
 
 /// Attachment id from a PMIS `attachments` map (supports common API key variants).
